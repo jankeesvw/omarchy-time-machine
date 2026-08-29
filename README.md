@@ -21,6 +21,22 @@ omarchy bar move jankeesvw.time-machine --section right
 
 [restic](https://restic.net) is the thing that does the actual copying. It's excellent, it's boring in the best way, and it's the only thing you need to install.
 
+### The command line
+
+Most of this you can do from the panel. The rest is a command that lives inside the plugin rather than on your `PATH`, so typing `omarchy-time-machine` on its own gets you `command not found`:
+
+```bash
+~/.config/omarchy/plugins/jankeesvw.time-machine/bin/omarchy-time-machine
+```
+
+Every `omarchy-time-machine ...` line below means that path. If you are going to type it more than once, give it a name:
+
+```bash
+alias omarchy-time-machine=~/.config/omarchy/plugins/jankeesvw.time-machine/bin/omarchy-time-machine
+```
+
+Put that in your `~/.bashrc` to keep it. The plugin never adds anything to your `PATH` itself, because where your shell looks for commands is yours to decide.
+
 ## Point it somewhere
 
 Click the icon in your bar and choose **Create Configuration**. It writes a starter file and opens it in your editor, so you're never staring at a blank buffer wondering what goes in it. What you get looks like this:
