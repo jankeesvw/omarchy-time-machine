@@ -473,7 +473,7 @@ restic_context() {
   local repository password_file password_command key
 
   load_secrets
-  for key in ${!SECRETS[@]+"${!SECRETS[@]}"}; do
+  for key in "${!SECRETS[@]}"; do
     export "$key=${SECRETS[$key]}"
   done
 

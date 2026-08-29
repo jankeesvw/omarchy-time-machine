@@ -86,6 +86,23 @@ check $? "the config directory is 700"
 $CLI init --dest test >/dev/null 2>&1
 check $? "init creates the repository"
 
+# More than one entry in a destination's secrets file must be exported one at
+# a time. The defensive empty-array expansion used here previously collapsed
+# the associative array values into one invalid variable name under Bash.
+SECRETS_FILE="$XDG_CONFIG_HOME/omarchy-time-machine/test.env"
+printf 'REPO_ROOT=%s\nREPO_NAME=repo\n' "$WORK" > "$SECRETS_FILE"
+cp "$XDG_CONFIG_HOME/omarchy-time-machine/config.json" "$WORK/config.before-secrets"
+jq --arg s "$SECRETS_FILE" '
+  .destinations[0].repository = "${REPO_ROOT}/${REPO_NAME}"
+  | .destinations[0].secrets_file = $s' \
+  "$XDG_CONFIG_HOME/omarchy-time-machine/config.json" > "$WORK/config.with-secrets"
+mv "$WORK/config.with-secrets" "$XDG_CONFIG_HOME/omarchy-time-machine/config.json"
+
+$CLI snapshots --dest test --json | jq -e '.ok == true' >/dev/null 2>&1
+check $? "multiple secrets-file entries are exported individually"
+
+cp "$WORK/config.before-secrets" "$XDG_CONFIG_HOME/omarchy-time-machine/config.json"
+
 # --- backup ----------------------------------------------------------------
 
 group "Backup"
