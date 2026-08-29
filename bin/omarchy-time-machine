@@ -65,6 +65,13 @@ LS_ENTRY_CAP=500
 # has a pool to sort, and truncated stays honest either way.
 LS_LINE_CAP=5000
 SNAPSHOT_CAP=200
+# And a ceiling on the bytes, because the two above only bound how many things
+# restic hands back, never how large any one of them is. A single `ls --json`
+# line carries a path, and a single snapshot object carries its paths and its
+# summary, so either can be arbitrarily large no matter how few there are.
+LS_BYTE_CAP=$((8 * 1024 * 1024))
+SNAPSHOT_BYTE_CAP=$((4 * 1024 * 1024))
+LOCKS_BYTE_CAP=$((1 * 1024 * 1024))
 PROGRESS_INTERVAL_MS=500
 STALE_PROGRESS_SECONDS=10
 
@@ -498,6 +505,20 @@ restic_context() {
   return 0
 }
 
+# Read at most $1 bytes of stdin, and refuse rather than hand back a piece of
+# an answer. Reading cap+1 is what makes the test possible: at cap+1 there was
+# more to come, and the only honest thing to do with a truncated JSON stream is
+# to say so. Callers turn a non-zero return into {ok:false}, never into a short
+# list, because a restore browser that quietly shows half a directory is worse
+# than one that admits it could not read it.
+read_capped() {
+  local cap="$1" data size
+  data="$(head -c "$((cap + 1))")"
+  size="$(printf '%s' "$data" | wc -c)"
+  [ "$size" -le "$cap" ] || return 1
+  printf '%s' "$data"
+}
+
 restic_run() { restic ${RESTIC_ARGS+"${RESTIC_ARGS[@]}"} "$@"; }
 
 # pre_command lives in the user's own configuration, so a shell string is as
@@ -521,7 +542,12 @@ run_pre_command() {
 # grep this script replaced.
 clear_stale_locks() {
   local locks
-  locks="$(restic_run list locks 2>/dev/null)"
+  # Small by nature, capped anyway: "the repository decides how much memory
+  # this costs" is the wrong default even where the number never bites.
+  locks="$(restic_run list locks 2>/dev/null | read_capped "$LOCKS_BYTE_CAP")" || {
+    log_line "Lock listing was too large to read; skipping the stale-lock sweep."
+    return 0
+  }
   [ -n "$locks" ] || return 0
   log_line "Locks present on the repository, clearing stale ones..."
   if restic_run unlock >/dev/null 2>&1; then
@@ -977,7 +1003,8 @@ cmd_snapshots() {
   # A retention policy keeps this in the tens, so --latest is a ceiling rather
   # than a limit anybody meets. It is here because "the repository decides how
   # much memory this costs" is the wrong default, not because the number bites.
-  out="$(restic_run snapshots --json --latest "$SNAPSHOT_CAP" 2>/dev/null)"
+  out="$(restic_run snapshots --json --latest "$SNAPSHOT_CAP" 2>/dev/null | read_capped "$SNAPSHOT_BYTE_CAP")" ||
+    { jq -nc '{ok:false, error:"snapshot list too large to read safely", snapshots:[]}'; return 0; }
   [ -n "$out" ] || { jq -nc '{ok:false, error:"could not read snapshots", snapshots:[]}'; return 0; }
 
   jq -c '{ok:true, snapshots:([.[] | {id, short_id, time, paths, summary}] | reverse)}' <<<"$out" 2>/dev/null ||
@@ -1005,7 +1032,8 @@ cmd_ls() {
   # restic writes one JSON object per line, so a line ceiling cuts cleanly --
   # no half object for jq to choke on -- and it bounds the read before bash or
   # jq ever hold it.
-  out="$(restic_run ls --json -- "$OPT_SNAPSHOT" "$path" 2>/dev/null | head -n "$LS_LINE_CAP")"
+  out="$(restic_run ls --json -- "$OPT_SNAPSHOT" "$path" 2>/dev/null | head -n "$LS_LINE_CAP" | read_capped "$LS_BYTE_CAP")" ||
+    { jq -nc --arg p "$path" '{ok:false, error:"listing too large to read safely", path:$p, entries:[]}'; return 0; }
   [ -n "$out" ] ||
     { jq -nc --arg p "$path" '{ok:false, error:"could not list snapshot", path:$p, entries:[]}'; return 0; }
 
@@ -1348,8 +1376,11 @@ record_status() {
   snapshot_count=null
   repo_size=null
   if [ "$result" != "failed" ]; then
-    snapshot_count="$(number_or "$(restic_run snapshots --json 2>/dev/null | jq -r 'length' 2>/dev/null)" null)"
-    repo_size="$(number_or "$(restic_run stats --mode raw-data --json 2>/dev/null | jq -r '.total_size // empty' 2>/dev/null)" null)"
+    # jq holds whatever the pipe hands it, so the read is bounded before jq
+    # rather than after. Without --latest this asked the repository for every
+    # snapshot it had, purely to count them.
+    snapshot_count="$(number_or "$(restic_run snapshots --json 2>/dev/null | read_capped "$SNAPSHOT_BYTE_CAP" | jq -r 'length' 2>/dev/null)" null)"
+    repo_size="$(number_or "$(restic_run stats --mode raw-data --json 2>/dev/null | read_capped "$SNAPSHOT_BYTE_CAP" | jq -r '.total_size // empty' 2>/dev/null)" null)"
   fi
 
   jq \
