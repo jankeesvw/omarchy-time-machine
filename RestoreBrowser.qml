@@ -131,6 +131,9 @@ FocusScope {
   property string rootPath: ""
   property var selected: null
   property string filter: ""
+  // Kept with the active snapshot so source selection stays stable while
+  // snapshots update asynchronously.
+  property var snapshotRoots: []
 
   implicitHeight: column.implicitHeight
 
@@ -141,6 +144,25 @@ FocusScope {
       if (TimeMachineStore.snapshots[i].id === root.snapshotId)
         return TimeMachineStore.snapshots[i]
     return null
+  }
+
+  function containsRoot(roots, path) {
+    for (var i = 0; i < roots.length; i++)
+      if (String(roots[i]) === path) return true
+    return false
+  }
+
+  function isAtOrBelowRoot(path, base) {
+    if (base === "/") return path.indexOf("/") === 0
+    return path === base || path.indexOf(base + "/") === 0
+  }
+
+  function openRoot(path) {
+    root.rootPath = String(path)
+    root.selected = null
+    root.cursorIndex = 0
+    clearFilter()
+    TimeMachineStore.listPath(root.snapshotId, root.rootPath)
   }
 
   function clearFilter() { root.filter = ""; root.cursorIndex = 0 }
@@ -169,16 +191,20 @@ FocusScope {
   // folder is empty in this snapshot; ".." is one keystroke away.
   function openSnapshot(id) {
     var previous = TimeMachineStore.currentPath
+    var previousRoot = root.rootPath
     root.snapshotId = id
     root.selected = null
     root.cursorIndex = 0
     clearFilter()
 
-    var snap = currentSnapshot()
-    root.rootPath = snap && snap.paths && snap.paths.length > 0 ? String(snap.paths[0]) : "/"
+    var snapshot = currentSnapshot()
+    var roots = snapshot && snapshot.paths ? snapshot.paths : []
+    root.snapshotRoots = roots
+    root.rootPath = roots.length > 0 ? String(roots[0]) : "/"
+    if (containsRoot(roots, previousRoot)) root.rootPath = previousRoot
 
     var target = root.rootPath
-    if (previous !== "" && previous.indexOf(root.rootPath) === 0) target = previous
+    if (previous !== "" && isAtOrBelowRoot(previous, root.rootPath)) target = previous
     TimeMachineStore.listPath(id, target)
   }
 
@@ -345,6 +371,48 @@ FocusScope {
       }
     }
 
+    // A snapshot can contain several configured source directories. Stay at
+    // one source root while browsing, but make every root reachable instead
+    // of silently treating the first path as the whole snapshot.
+    Row {
+      width: parent.width
+      visible: root.snapshotRoots.length > 1
+      spacing: Style.space(8)
+
+      Text {
+        id: sourceLabel
+        anchors.verticalCenter: parent.verticalCenter
+        text: "Source"
+        textFormat: Text.PlainText
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+
+      Dropdown {
+        width: parent.width - sourceLabel.implicitWidth - parent.spacing
+        anchors.verticalCenter: parent.verticalCenter
+        label: ""
+        showLabel: false
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        value: root.rootPath
+        options: {
+          var list = []
+          for (var i = 0; i < root.snapshotRoots.length; i++) {
+            var path = String(root.snapshotRoots[i])
+            list.push({ value: path, label: path })
+          }
+          return list
+        }
+        onChanged: function(value) {
+          root.openRoot(value)
+          root.takeFocus()
+        }
+        onPopupOpenChanged: if (!popupOpen) root.takeFocus()
+      }
+    }
+
     Text {
       width: parent.width
       visible: TimeMachineStore.snapshotsBusy || TimeMachineStore.snapshotsError !== ""
@@ -361,6 +429,8 @@ FocusScope {
     Text {
       width: parent.width
       visible: TimeMachineStore.currentPath !== ""
+               && (root.snapshotRoots.length <= 1
+                   || TimeMachineStore.currentPath !== root.rootPath)
       text: TimeMachineStore.currentPath
       textFormat: Text.PlainText
       elide: Text.ElideLeft
