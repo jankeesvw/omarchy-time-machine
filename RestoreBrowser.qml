@@ -334,6 +334,11 @@ FocusScope {
         }
         onChanged: function(value) {
           root.snapshotId = ""
+          // The roots belong to the snapshot we were looking at, which is not
+          // in this destination. Without clearing them the source picker keeps
+          // offering them while the new snapshots load, and picking one asks
+          // the CLI to list a path under no snapshot at all.
+          root.snapshotRoots = []
           TimeMachineStore.browseDestination(value)
           root.takeFocus()
         }
