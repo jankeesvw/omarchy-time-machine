@@ -1708,7 +1708,6 @@ timer_unit() {
   cat <<UNIT
 [Unit]
 Description=Time Machine backup to $name
-Requires=omarchy-time-machine@$name.service
 
 [Timer]
 Unit=omarchy-time-machine@$name.service

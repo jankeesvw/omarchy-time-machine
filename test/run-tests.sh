@@ -376,6 +376,13 @@ for unit in "omarchy-time-machine@.service" "omarchy-time-machine-failed@.servic
   check $? "install writes $unit"
 done
 
+# A timer starts its service through Unit=; it must not Require that service.
+# Otherwise cancelling one running backup deactivates the long-lived timer and
+# silently prevents every future scheduled backup.
+! grep -q '^Requires=omarchy-time-machine@test.service$' \
+  "$XDG_CONFIG_HOME/systemd/user/omarchy-time-machine@test.timer"
+check $? "cancelling a backup cannot deactivate its timer"
+
 # restic exits 3 when it could not read a source file. The snapshot it writes
 # then has holes in it, and calling that a success is how a backup rots
 # unnoticed: the last snapshot that still held the file ages out, prune
