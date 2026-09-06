@@ -26,14 +26,37 @@ export XDG_STATE_HOME="$WORK/state"
 
 PASSED=0
 FAILED=0
+SKIPPED=0
+
+# Most of this suite drives a real restic repository. Without restic those
+# tests cannot run, and reporting them as failures is worse than useless: a
+# machine with no restic printed 34 red lines that said nothing about the
+# code, which buries the handful of real results and makes a green run
+# indistinguishable from a missing dependency. Groups that need it are marked,
+# and their checks are skipped by name instead.
+HAVE_RESTIC=1
+command -v restic >/dev/null 2>&1 || HAVE_RESTIC=0
+GROUP_NEEDS_RESTIC=0
 
 cleanup() { rm -rf -- "$WORK"; }
 trap cleanup EXIT
 
 ok()   { PASSED=$((PASSED + 1)); printf '  \033[32mpass\033[0m  %s\n' "$1"; }
 no()   { FAILED=$((FAILED + 1)); printf '  \033[31mFAIL\033[0m  %s\n' "$1"; }
-check(){ if [ "$1" = "0" ]; then ok "$2"; else no "$2"; fi; }
-group(){ printf '\n\033[1m%s\033[0m\n' "$1"; }
+skip() { SKIPPED=$((SKIPPED + 1)); printf '  \033[33mskip\033[0m  %s\n' "$1"; }
+check(){
+  if [ "$GROUP_NEEDS_RESTIC" = "1" ] && [ "$HAVE_RESTIC" = "0" ]; then skip "$2"; return; fi
+  if [ "$1" = "0" ]; then ok "$2"; else no "$2"; fi
+}
+group(){ GROUP_NEEDS_RESTIC=0; printf '\n\033[1m%s\033[0m\n' "$1"; }
+# Same heading, but every check under it is skipped when restic is missing.
+group_restic(){ GROUP_NEEDS_RESTIC=1; printf '\n\033[1m%s\033[0m\n' "$1"; }
+
+if [ "$HAVE_RESTIC" = "0" ]; then
+  printf '\033[33mrestic is not installed.\033[0m Everything that needs a repository is\n'
+  printf 'skipped below, so the CLI prints its own "restic is not installed" between\n'
+  printf 'the results. Install restic to run the whole suite.\n'
+fi
 
 # --- fixture ---------------------------------------------------------------
 
@@ -58,7 +81,7 @@ JSON
 
 # --- before there is a key -------------------------------------------------
 
-group "Without a key"
+group_restic "Without a key"
 
 $CLI status --json | jq -e '.configured == true' >/dev/null 2>&1
 check $? "status works with no key and no network"
@@ -72,7 +95,7 @@ check $? "a missing key names the command that fixes it"
 
 # --- setup -----------------------------------------------------------------
 
-group "Setup"
+group_restic "Setup"
 
 printf 'test-password\n' | $CLI key set --dest test >/dev/null 2>&1
 check $? "key set"
@@ -105,7 +128,7 @@ cp "$WORK/config.before-secrets" "$XDG_CONFIG_HOME/omarchy-time-machine/config.j
 
 # --- backup ----------------------------------------------------------------
 
-group "Backup"
+group_restic "Backup"
 
 $CLI backup --dest test >/dev/null 2>&1
 check $? "backup exits 0"
@@ -130,7 +153,7 @@ check $? "the exclude file is honoured (.env stayed out)"
 # a backup rot in silence: the last snapshot that still held the file ages out
 # of the retention policy, prune reclaims its data, and nothing ever went red.
 
-group "Unreadable source files"
+group_restic "Unreadable source files"
 
 GOOD_SUCCESS="$(jq -r '.destinations.test.last_success_at' "$STATUS")"
 LOGS="$XDG_STATE_HOME/omarchy-time-machine/logs/test"
@@ -178,7 +201,7 @@ check $? "and prune resumes, clearing the backlog the failures left behind"
 
 # --- reading the repository ------------------------------------------------
 
-group "Reading"
+group_restic "Reading"
 
 SNAP="$($CLI snapshots --dest test --json | jq -r '.snapshots[0].id')"
 
@@ -198,7 +221,7 @@ check $? "restore writes the file into the target directory"
 # is what keeps that bounded -- and what could just as easily hand jq a half
 # object, which is the part worth pinning down.
 
-group "Large listings"
+group_restic "Large listings"
 
 mkdir -p "$WORK/src/many"
 (cd "$WORK/src/many" && seq 1 6000 | xargs -P8 -n1000 touch)
@@ -242,7 +265,7 @@ check $? "and plain() is what strips the characters that make Qt see markup"
 # Snapshot ids and paths travel from the widget back into restic. They are
 # treated as input: refused on the wrong shape rather than repaired.
 
-group "Input validation"
+group_restic "Input validation"
 
 $CLI ls --dest test --snapshot "../../etc/passwd" --path /tmp --json | jq -e '.ok == false' >/dev/null 2>&1
 check $? "a path-traversal snapshot id is refused"
@@ -258,7 +281,7 @@ check $? "restore refuses an invalid id (die inside \$( ) would only kill a subs
 # The widget parses stdout. A stray progress line there is indistinguishable
 # from a crashed script, which is exactly what a pre_command once caused.
 
-group "stdout discipline"
+group_restic "stdout discipline"
 
 CONFIG="$XDG_CONFIG_HOME/omarchy-time-machine/config.json"
 cp "$CONFIG" "$WORK/config.bak"
@@ -271,7 +294,7 @@ cp "$WORK/config.bak" "$CONFIG"
 
 # --- file safety -----------------------------------------------------------
 
-group "File safety"
+group_restic "File safety"
 
 echo "MUST SURVIVE" > "$WORK/victim.txt"
 rm -f "$STATUS"
@@ -304,7 +327,7 @@ cp "$WORK/dotfiles/config.json" "$CONFIG"
 
 # --- configuration errors --------------------------------------------------
 
-group "Configuration errors"
+group_restic "Configuration errors"
 
 jq '.destinations[0].password_command = "echo x"
     | .destinations[0].password_file = "'"$XDG_CONFIG_HOME"'/omarchy-time-machine/test.key"' \
@@ -322,7 +345,7 @@ cp "$WORK/config.bak" "$CONFIG"
 
 # --- failure handling ------------------------------------------------------
 
-group "Failure handling"
+group_restic "Failure handling"
 
 jq --arg r "$WORK/does-not-exist" \
    --arg c "printf hooked > $WORK/hook.txt" \
@@ -355,7 +378,7 @@ cp "$WORK/config.bak" "$CONFIG"
 
 # --- staleness -------------------------------------------------------------
 
-group "Progress staleness"
+group_restic "Progress staleness"
 
 PROGRESS="$XDG_STATE_HOME/omarchy-time-machine/progress-test.json"
 jq '.state = "running" | .updated_epoch = (now - 600 | floor)' "$PROGRESS" > "$PROGRESS.n" && mv "$PROGRESS.n" "$PROGRESS"
@@ -405,7 +428,7 @@ fi
 
 # --- multiple destinations -------------------------------------------------
 
-group "Multiple destinations"
+group_restic "Multiple destinations"
 
 cp "$WORK/config.bak" "$CONFIG"
 mkdir -p "$WORK/repo-b"
@@ -448,7 +471,7 @@ cp "$WORK/config.bak" "$CONFIG"
 
 # --- labels and failure reporting ------------------------------------------
 
-group "Labels and failure state"
+group_restic "Labels and failure state"
 
 cp "$WORK/config.bak" "$CONFIG"
 jq '.destinations[0].display_name = "The Big Disk"' "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
@@ -521,7 +544,7 @@ cp "$WORK/config.bak" "$CONFIG"
 
 # --- more than one source ---------------------------------------------------
 
-group "Multiple sources"
+group_restic "Multiple sources"
 
 mkdir -p "$WORK/extra"
 echo "elsewhere" > "$WORK/extra/note.txt"
@@ -623,7 +646,7 @@ cp "$CONFIG_BACKUP" "$CONFIG"
 # Screenshots must never show a real home directory, and a click while posing
 # must not reach a real repository.
 
-group "Demo mode"
+group_restic "Demo mode"
 
 $CLI demo on >/dev/null 2>&1
 [ "$($CLI status --json | jq -r '[.destinations[].name] | join(",")')" = "nas,usb,offsite" ]
@@ -639,5 +662,10 @@ check $? "turning demo off restores the real configuration"
 
 # --- result ----------------------------------------------------------------
 
-printf '\n%d passed, %d failed\n' "$PASSED" "$FAILED"
+if [ "$SKIPPED" -gt 0 ]; then
+  printf '\n%d passed, %d failed, %d skipped\n' "$PASSED" "$FAILED" "$SKIPPED"
+  [ "$HAVE_RESTIC" = "0" ] && printf 'restic is not installed, so every test that needs a repository was skipped.\n'
+else
+  printf '\n%d passed, %d failed\n' "$PASSED" "$FAILED"
+fi
 [ "$FAILED" = "0" ]
