@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
 #
-# omarchy-time-machine — restic backups with a bar widget on top.
+# omarchy-time-machine: restic backups with a bar widget on top.
 #
 # This is the only place that touches restic, systemd and the state files; the
 # QML widget does nothing but call this script and read JSON. That split is
@@ -331,7 +331,7 @@ config_problem() {
 
 load_config() {
   user_file "$CONFIG_FILE" ||
-    die "no configuration at $CONFIG_FILE — create one (see the README) or use the button in the panel"
+    die "no configuration at $CONFIG_FILE, create one (see the README) or use the button in the panel"
 
   CONFIG_JSON="$(cat -- "$CONFIG_FILE")"
 
@@ -499,7 +499,7 @@ restic_context() {
 
   [ -n "$password_file" ] || password_file="$CONFIG_DIR/$DEST_NAME.key"
   user_file "$password_file" ||
-    die "no key file at $password_file — run: omarchy-time-machine key set --dest $DEST_NAME"
+    die "no key file at $password_file, run: omarchy-time-machine key set --dest $DEST_NAME"
   chmod 600 -- "$password_file" 2>/dev/null
   export RESTIC_PASSWORD_FILE="$password_file"
   return 0
@@ -714,7 +714,7 @@ key_save_to_1password() {
   fi
 
   user_file "$keyfile" ||
-    die "no key file at $keyfile — run: omarchy-time-machine key set --dest $DEST_NAME"
+    die "no key file at $keyfile, run: omarchy-time-machine key set --dest $DEST_NAME"
 
   title="Time Machine backup key ($DEST_NAME)"
   [ -n "$OPT_VAULT" ] && vault_args=(--vault "$OPT_VAULT")
@@ -1119,7 +1119,7 @@ cmd_backup() {
     die "source does not exist: ${missing[0]}"
   fi
 
-  log_line "=== Time Machine — backup to $DEST_NAME ==="
+  log_line "=== Time Machine: backup to $DEST_NAME ==="
   log_line "Started: $(date)"
   log_line "Source:  $(printf '%s, ' "${sources[@]}" | sed 's/, $//')"
   log_line "Target:  $REPO_DISPLAY"
@@ -1174,7 +1174,7 @@ cmd_backup() {
   if [ "$summary" != "null" ]; then
     log_line "$(jq -r '"Files: \(.files_new // 0) new, \(.files_changed // 0) changed, \(.files_unmodified // 0) unmodified"' <<<"$summary" 2>/dev/null)"
     log_line "$(jq -r '"Added:    \(((.data_added // 0) / 1048576) | floor) MiB"' <<<"$summary" 2>/dev/null)"
-    log_line "$(jq -r '"Snapshot: \(.snapshot_id // "(none — nothing changed)")"' <<<"$summary" 2>/dev/null)"
+    log_line "$(jq -r '"Snapshot: \(.snapshot_id // "(none, nothing changed)")"' <<<"$summary" 2>/dev/null)"
   fi
 
   local reason=""

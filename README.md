@@ -131,6 +131,8 @@ You only need `name` and `repository`. Everything else already has a sensible de
 
 Run `omarchy-time-machine install` again after changing a schedule.
 
+Run it once after updating past 1.1.0 as well, even if nothing changed. Timers written before that carried a `Requires=` on the backup service, which meant that stopping a running backup switched the timer off with it: the run you cancelled was the last one that was ever scheduled, and nothing said so. The units are rewritten and re-enabled by that command; until you run it, an already-stopped timer stays stopped.
+
 Times show on a 24-hour clock, to match the Omarchy clock next to it. If you'd rather have AM and PM, that's a setting on the widget in `shell.json`:
 
 ```json
