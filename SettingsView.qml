@@ -528,7 +528,7 @@ FocusScope {
           label: "Skip what is listed in"
           value: root.excludeFile
           placeholder: "excludes.txt next to config.json"
-          hint: "One pattern per line, restic style. Caches, downloads, anything you can get back another way."
+          hint: "A file of patterns, one per line, restic style: caches, downloads, anything you can get back another way. Empty means excludes.txt next to config.json."
           onEdited: function(text) { root.excludeFile = text; root.dirty = true; root.problem = "" }
         }
 
