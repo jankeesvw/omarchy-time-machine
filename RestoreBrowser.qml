@@ -94,12 +94,26 @@ FocusScope {
   // whoever opened it to have done so. The click that opens this was the only
   // thing calling loadSnapshots, which meant any other route in showed two
   // empty dropdowns and nothing else.
-  function ensureLoaded() {
+  function ensureLoaded() { root.syncSnapshots(false) }
+
+
+  // force: re-read even when a list has already been read. Opening this view
+  // does, because the usual reason for coming here is that a backup just ran,
+  // and a list cached from before it is missing exactly the snapshot you came
+  // for -- an empty repository read once at startup stayed empty for the life
+  // of the shell process, with no way to refresh it short of restarting.
+  //
+  // Everything else does not. `snapshots` is a network call to a NAS that may
+  // be asleep, and the idle status poll lands a new destinations list every
+  // few seconds; refreshing on that would put a round trip behind a widget
+  // that is only meant to say "3 hours ago". See the note at the top of
+  // TimeMachineStore.
+  function syncSnapshots(force) {
     if (!visible) return
     if (TimeMachineStore.destinations.length === 0) return
     takeFocus()
-    if (!TimeMachineStore.snapshotsLoaded && !TimeMachineStore.snapshotsBusy)
-      TimeMachineStore.loadSnapshots()
+    if (TimeMachineStore.snapshotsBusy) return
+    if (force || !TimeMachineStore.snapshotsLoaded) TimeMachineStore.loadSnapshots()
   }
 
   // Three triggers, and each one covers a case the others miss.
@@ -110,8 +124,12 @@ FocusScope {
   // status poll has not come back yet, so loadSnapshots would return without
   // doing anything and never try again. Opening the panel and going straight
   // to the browser is exactly how somebody in a hurry uses this.
-  onVisibleChanged: ensureLoaded()
-  Component.onCompleted: ensureLoaded()
+  //
+  // The first two are somebody opening this on purpose, so they re-read. The
+  // third is the view catching up with a poll it did not ask for, so it does
+  // not.
+  onVisibleChanged: root.syncSnapshots(true)
+  Component.onCompleted: root.syncSnapshots(true)
 
   Connections {
     target: TimeMachineStore
