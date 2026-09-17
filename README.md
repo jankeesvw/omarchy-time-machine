@@ -23,7 +23,7 @@ omarchy bar move jankeesvw.time-machine --section right
 
 ### The command line
 
-Most of this you can do from the panel. The rest is a command that lives inside the plugin rather than on your `PATH`, so typing `omarchy-time-machine` on its own gets you `command not found`:
+Everything below can be done from the panel, and that is the way to do it the first time. The command line does the same things for people who prefer it, or want to script it. It lives inside the plugin rather than on your `PATH`, so typing `omarchy-time-machine` on its own gets you `command not found`:
 
 ```bash
 ~/.config/omarchy/plugins/jankeesvw.time-machine/bin/omarchy-time-machine
@@ -39,7 +39,9 @@ Put that in your `~/.bashrc` to keep it. The plugin never adds anything to your 
 
 ## Point it somewhere
 
-Click the icon in your bar and choose **Create Configuration**. It writes a starter file and opens it in your editor, so you're never staring at a blank buffer wondering what goes in it. What you get looks like this:
+Click the icon in your bar and choose **Set Up Backups**. You get a form: where the backup goes, when it runs, what to keep. Fill in the repository, press **Save**, and the rest of the setup is three buttons on the same page: set a password, create the repository, turn on the schedule. The panel says which of them still needs doing.
+
+Prefer a file? The same page has **Edit config.json in Your Editor**, which writes a starter file and opens it, so you're never staring at a blank buffer wondering what goes in it. What you get looks like this:
 
 ```json
 {
@@ -73,7 +75,7 @@ Anywhere restic can write works: a local disk, SFTP, a REST server, S3, Minio, W
 
 Your backups are encrypted, and that's not optional. An external drive gets lost, a NAS gets stolen, a bucket in the cloud sits on somebody else's computer. Encrypted means that when your backup ends up somewhere you didn't intend, it's noise to whoever finds it.
 
-The price of that is a password. Pick one and it gets stored on this machine, so you'll never be asked for it again in normal use:
+The price of that is a password. Pick one and it gets stored on this machine, so you'll never be asked for it again in normal use. In the panel that is **Set Password**, then **Create Repository**, then **Turn On Scheduled Backups**, each under the destination it belongs to. From the terminal:
 
 ```bash
 omarchy-time-machine key set --dest backup-drive
@@ -81,7 +83,7 @@ omarchy-time-machine init --dest backup-drive
 omarchy-time-machine install
 ```
 
-Those three lines set the password, prepare the destination, and switch on the nightly schedule. That's the setup done. Go do something else.
+Either way, those three steps set the password, prepare the destination, and switch on the nightly schedule. That's the setup done. Go do something else.
 
 ## Now save that password somewhere else
 
@@ -89,13 +91,15 @@ Read this bit. It's the one thing that quietly makes backups worthless.
 
 Your password is stored in your home folder, and your home folder is what gets backed up. So the copy that ends up inside your backup is locked behind the very password you'd be trying to recover. If this laptop is stolen or dies, your backups are a pile of bytes that nobody can open. Not you, not me, not restic.
 
+Under each destination in the panel there is **Show** and **Copy**. From the terminal:
+
 ```bash
 omarchy-time-machine key show --dest backup-drive
 ```
 
 Put that in your password manager. Print it and put it in a drawer. Do it today, because the moment you need it is exactly the moment you can't get to it.
 
-If you use 1Password, there's a shortcut:
+If you use 1Password, there's a shortcut, as a button in the panel and as a command:
 
 ```bash
 omarchy-time-machine key save-1password --dest backup-drive
@@ -117,7 +121,7 @@ Everything you restore lands in `~/Restored/`, never on top of your current file
 
 ## Things you might want to change
 
-You only need `name` and `repository`. Everything else already has a sensible default.
+Every one of these is on the settings page in the panel; the table gives the name each has in the file. You only need `name` and `repository`. Everything else already has a sensible default.
 
 | Setting | Default | What it's for |
 |---|---|---|
@@ -129,7 +133,7 @@ You only need `name` and `repository`. Everything else already has a sensible de
 | `pre_command` | none | A command to wake the destination first. See below. |
 | `on_failure_command` | none | A command to run when a backup fails, if a red icon isn't enough. |
 
-Run `omarchy-time-machine install` again after changing a schedule.
+Saving from the panel keeps the timers in step with the schedules. After editing the file by hand, run `omarchy-time-machine install` again.
 
 Run it once after updating past 1.1.0 as well, even if nothing changed. Timers written before that carried a `Requires=` on the backup service, which meant that stopping a running backup switched the timer off with it: the run you cancelled was the last one that was ever scheduled, and nothing said so. The units are rewritten and re-enabled by that command; until you run it, an already-stopped timer stays stopped.
 

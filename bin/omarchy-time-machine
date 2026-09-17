@@ -20,8 +20,14 @@
 #   omarchy-time-machine ls --dest N --snapshot ID --path /abs --json
 #   omarchy-time-machine restore --dest N --snapshot ID --path P [--target DIR]
 #   omarchy-time-machine check --dest N
-#   omarchy-time-machine install               write and enable the systemd units
+#   omarchy-time-machine install [--json]      write and enable the systemd units
+#   omarchy-time-machine config show [--json]  print the configuration
+#   omarchy-time-machine config write [--json] replace it with the JSON on stdin
 #   omarchy-time-machine log [--dest N]
+#
+# Everything the README's setup walks through -- config create, key set, init,
+# install -- also answers in JSON under --json, and that is what the panel's
+# settings view drives. The terminal forms are unchanged.
 #
 # Dependencies: bash, jq, restic. jq ships as a hard dependency of Omarchy
 # itself, so nothing here needs installing beyond restic. Deliberately not Ruby
@@ -103,9 +109,12 @@ UNREADABLE_FILE=""
 # command substitution: there it would exit the subshell and the caller would
 # sail on with an empty string. Functions that can fail therefore write their
 # result into a global rather than printing it.
+# JSON_OUT_FD: a command that has moved its stdout aside (see cmd_install) says
+# where the JSON answer still has to go.
+JSON_OUT_FD=1
 die() {
   if [ "$JSON_MODE" = "1" ]; then
-    jq -nc --arg e "$*" '{ok:false, error:$e}'
+    jq -nc --arg e "$*" '{ok:false, error:$e}' >&"$JSON_OUT_FD"
     exit 0
   fi
   printf 'Error: %s\n' "$*" >&2
@@ -748,6 +757,7 @@ Without this password the backup cannot be opened. Not by you, not by anyone."
   printf '%s' "$template" | timeout 30 op item create ${vault_args+"${vault_args[@]}"} - >/dev/null ||
     die "1Password refused to create the item"
 
+  [ "$JSON_MODE" = "1" ] && return 0
   printf 'Saved to 1Password as "%s".\n' "$title"
   printf 'That is the copy that survives losing this machine.\n'
 }
@@ -756,6 +766,7 @@ cmd_key() {
   local action="${1:-}"
   [ "$#" -gt 0 ] && shift
   parse_options "$@"
+  [ "$OPT_JSON" = "1" ] && JSON_MODE=1
 
   local password path
   load_config
@@ -768,12 +779,15 @@ cmd_key() {
   case "$action" in
     save-1password)
       key_save_to_1password "$path"
+      [ "$JSON_MODE" = "1" ] &&
+        jq -nc --arg t "Time Machine backup key ($DEST_NAME)" '{ok:true, title:$t}'
       ;;
     set)
       [ -z "$(dest '.password_command // empty')" ] ||
         die "destination $DEST_NAME uses password_command; a key file would do nothing there"
 
-      printf 'Repository password for %s (input is hidden):\n' "$DEST_NAME" >&2
+      [ "$JSON_MODE" = "1" ] ||
+        printf 'Repository password for %s (input is hidden):\n' "$DEST_NAME" >&2
       if [ -t 0 ]; then
         read -rs password
         printf '\n' >&2
@@ -792,14 +806,27 @@ cmd_key() {
         jq --arg n "$DEST_NAME" --arg p "$path" \
           '(.destinations[] | select(.name == $n) | .password_file) = $p' <<<"$CONFIG_JSON" \
           | write_private "$CONFIG_FILE" || die "could not record password_file in $CONFIG_FILE"
-        printf 'Key written to %s (mode 600), and recorded in config.json.\n\n' "$path"
+        [ "$JSON_MODE" = "1" ] ||
+          printf 'Key written to %s (mode 600), and recorded in config.json.\n\n' "$path"
       else
-        printf 'Key written to %s (mode 600).\n\n' "$path"
+        [ "$JSON_MODE" = "1" ] ||
+          printf 'Key written to %s (mode 600).\n\n' "$path"
       fi
-      key_warning
+      if [ "$JSON_MODE" = "1" ]; then
+        jq -nc --arg p "$path" '{ok:true, path:$p}'
+      else
+        key_warning
+      fi
       ;;
     show)
       user_file "$path" || die "no key file at $path"
+      # The panel shows the key so it can be copied somewhere safe. It travels
+      # on a pipe that only the shell process reads, which is the same route
+      # the terminal form takes.
+      if [ "$JSON_MODE" = "1" ]; then
+        jq -nc --arg k "$(head -1 -- "$path")" '{ok:true, key:$k}'
+        return 0
+      fi
       key_warning
       printf '\n'
       cat -- "$path"
@@ -895,7 +922,9 @@ cmd_destinations() {
 
 
 # The only call the widget makes on a timer. Deliberately touches no network
-# and no key file: configuration, status.json and the progress file, no more.
+# and reads no key file: configuration, status.json and the progress file, no
+# more. Whether a key file *exists* is one stat, and it is what lets the panel
+# say "no password yet" instead of leaving the first backup to fail at 03:00.
 cmd_status() {
   JSON_MODE=1
   demo_on && { demo_status_json; return 0; }
@@ -917,6 +946,7 @@ cmd_status() {
   load_config
 
   local status active out name progress running epoch age updated installed repo
+  local key_present key_file
   status="$(load_status)"
   epoch="$(date +%s)"
   out='[]'
@@ -949,6 +979,15 @@ cmd_status() {
 
     repo="$(sanitize_repository "$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .repository // ""' <<<"$CONFIG_JSON")")"
 
+    key_present=false
+    if [ -n "$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .password_command // ""' <<<"$CONFIG_JSON")" ]; then
+      key_present=true
+    else
+      key_file="$(expand_tilde "$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .password_file // ""' <<<"$CONFIG_JSON")")"
+      [ -n "$key_file" ] || key_file="$CONFIG_DIR/$name.key"
+      user_file "$key_file" && key_present=true
+    fi
+
     out="$(jq -c \
       --arg name "$name" \
       --arg label "$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .display_name // $n' <<<"$CONFIG_JSON")" \
@@ -957,9 +996,11 @@ cmd_status() {
       --arg schedule "$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .schedule // ""' <<<"$CONFIG_JSON")" \
       --argjson running "$running" \
       --argjson progress "$progress" \
+      --argjson key_present "$key_present" \
       '. + [$stored + {name:$name, display_name:$label,
                        schedule:(if $schedule == "" then null else $schedule end),
                        running:$running,
+                       key_present:$key_present,
                        repository_display:(if $repo == "" then ($stored.repository_display // "") else $repo end),
                        progress:(if $running then $progress else null end)}]' <<<"$out")"
   done < <(cfg '.destinations[].name')
@@ -970,6 +1011,7 @@ cmd_status() {
 
 cmd_init() {
   parse_options "$@"
+  [ "$OPT_JSON" = "1" ] && JSON_MODE=1
   load_config
   select_destination "$OPT_DEST"
   config_dir_secure
@@ -978,6 +1020,24 @@ cmd_init() {
   run_pre_command
 
   printf 'Creating repository at %s...\n' "$REPO_DISPLAY" >&2
+
+  if [ "$JSON_MODE" = "1" ]; then
+    # A repository that is already there is not a failure from the panel's
+    # point of view: the button says "make sure this exists", and it does.
+    local output
+    if output="$(restic_run init 2>&1)"; then
+      printf '%s\n' "$output" >&2
+      jq -nc '{ok:true, already:false}'
+    elif grep -qiE 'already (initialized|exists)' <<<"$output"; then
+      printf '%s\n' "$output" >&2
+      jq -nc '{ok:true, already:true}'
+    else
+      printf '%s\n' "$output" >&2
+      die "$(error_line_of "$output")"
+    fi
+    return 0
+  fi
+
   restic_run init || return 1
   printf '\n'
   key_warning
@@ -1322,11 +1382,26 @@ run_forget() {
 # the actual reason. Shared, because the message reaches the status file by two
 # routes: caught while streaming, or dug out of the log afterwards.
 strip_error_prefix() {
-  local line="$1"
-  line="${line#Fatal: }"
-  line="${line#Error: }"
-  line="${line#error: }"
+  local line="$1" before=""
+  # Repeated, because restic's sftp backend says "Fatal: Fatal: ..." and one
+  # pass would leave the second one standing.
+  while [ "$line" != "$before" ]; do
+    before="$line"
+    line="${line#Fatal: }"
+    line="${line#Error: }"
+    line="${line#error: }"
+  done
   printf '%s' "$line"
+}
+
+# The same choice of line, out of captured output rather than a log file: the
+# "Fatal:" line if there is one, else the last line that says anything.
+error_line_of() {
+  local text="$1" line
+  line="$(grep -E '^(Fatal|Error|error):' <<<"$text" 2>/dev/null | tail -1)"
+  [ -n "$line" ] || line="$(grep -v -E '^[[:space:]]*$|^subprocess ssh: \*\*' <<<"$text" 2>/dev/null | tail -1)"
+  line="$(strip_error_prefix "$line")"
+  printf '%s' "${line:0:180}"
 }
 
 # The line worth showing a human out of a failed run. restic says the useful
@@ -1622,10 +1697,15 @@ stream_restore() {
 # ---------------------------------------------------------------------------
 
 cmd_config() {
-  case "${1:-}" in
+  local action="${1:-}"
+  [ "$#" -gt 0 ] && shift
+  parse_options "$@"
+  case "$action" in
     create) ;;
-    "") die "usage: config create" ;;
-    *) die "unknown config command: $1" ;;
+    show) config_show; return $? ;;
+    write) config_write; return $? ;;
+    "") die "usage: config create|show|write" ;;
+    *) die "unknown config command: $action" ;;
   esac
 
   if user_file "$CONFIG_FILE"; then
@@ -1656,6 +1736,63 @@ JSON
   printf '  omarchy-time-machine init --dest backup-drive\n' >&2
   printf '  omarchy-time-machine install\n' >&2
   printf '%s\n' "$CONFIG_FILE"
+}
+
+# The configuration as it is, for the panel's settings view to edit. The whole
+# object goes out and the whole object comes back, so a key this script does
+# not know about -- something a future version adds, something the user put
+# there for their own reasons -- survives a round trip through the form.
+config_show() {
+  if [ "$OPT_JSON" = "1" ]; then
+    JSON_MODE=1
+    if ! user_file "$CONFIG_FILE"; then
+      jq -nc --arg p "$CONFIG_FILE" '{ok:true, exists:false, path:$p, config:null}'
+      return 0
+    fi
+    local raw
+    raw="$(cat -- "$CONFIG_FILE")"
+    jq -e 'type == "object"' >/dev/null 2>&1 <<<"$raw" ||
+      die "config.json is not valid JSON, or not an object"
+    jq -c --arg p "$CONFIG_FILE" '{ok:true, exists:true, path:$p, config:.}' <<<"$raw"
+    return 0
+  fi
+  user_file "$CONFIG_FILE" || die "no configuration at $CONFIG_FILE"
+  jq . -- "$CONFIG_FILE" || cat -- "$CONFIG_FILE"
+}
+
+# Replaces the configuration with the JSON on stdin, after checking it the same
+# way status does -- so the panel can never save something the panel would then
+# report as broken. Schedules are checked with systemd itself where it is
+# there to ask: a typo in an OnCalendar line is otherwise found by the timer
+# that never fires.
+CONFIG_BYTE_CAP=$((1024 * 1024))
+config_write() {
+  [ "$OPT_JSON" = "1" ] && JSON_MODE=1
+  demo_on && die "demo mode is on, so the configuration is read-only until 'demo off'"
+
+  local incoming problem name schedule
+  incoming="$(head -c "$((CONFIG_BYTE_CAP + 1))")"
+  over_byte_cap "$incoming" "$CONFIG_BYTE_CAP" && die "the configuration is too large to be a configuration"
+  [ -n "$(trim "$incoming")" ] || die "nothing to write"
+
+  problem="$(config_problem "$incoming")" || die "$problem"
+
+  if command -v systemd-analyze >/dev/null 2>&1; then
+    while IFS=$'\t' read -r name schedule; do
+      [ -n "$schedule" ] || continue
+      systemd-analyze calendar -- "$schedule" >/dev/null 2>&1 ||
+        die "the schedule of $name is not something systemd understands: $schedule"
+    done < <(jq -r '.destinations[] | [.name, (.schedule // "")] | @tsv' <<<"$incoming")
+  fi
+
+  config_dir_secure
+  jq . <<<"$incoming" | write_private "$CONFIG_FILE" || die "could not write $CONFIG_FILE"
+
+  if [ "$JSON_MODE" = "1" ]; then
+    jq -nc --arg p "$CONFIG_FILE" '{ok:true, path:$p}'
+  else
+    printf 'Wrote %s\n' "$CONFIG_FILE"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1743,8 +1880,18 @@ write_unit() {
 }
 
 cmd_install() {
+  parse_options "$@"
   load_config
   mkdir -p -- "$SYSTEMD_DIR"
+
+  # Under --json the running commentary keeps going to the terminal, on
+  # stderr, and stdout is held back for the one JSON line at the end. The
+  # real stdout is parked on fd 3 so die() can still answer there.
+  if [ "$OPT_JSON" = "1" ]; then
+    JSON_MODE=1
+    exec 3>&1 1>&2
+    JSON_OUT_FD=3
+  fi
 
   printf 'Writing units into %s:\n' "$SYSTEMD_DIR"
   write_unit "omarchy-time-machine@.service" "$(service_unit)"
@@ -1782,6 +1929,7 @@ cmd_install() {
   if [ "${#names[@]}" -eq 0 ]; then
     printf '\nNo destination has a schedule, so nothing runs automatically.\n'
     printf 'Set an OnCalendar value in config.json (for example "*-*-* 03:00:00") and run this again.\n'
+    [ "$JSON_MODE" = "1" ] && jq -nc '{ok:true, scheduled:[]}' >&3
     return 0
   fi
 
@@ -1802,6 +1950,15 @@ cmd_install() {
   # Writing the units but failing to enable them means nothing is scheduled.
   # Reporting success there would be a lie the user only discovers by noticing
   # that no backup ever ran.
+  if [ "$JSON_MODE" = "1" ]; then
+    if [ "$failures" = "0" ]; then
+      jq -nc --argjson n "$(printf '%s\n' "${names[@]}" | jq -R . | jq -sc .)" \
+        '{ok:true, scheduled:$n}' >&3
+    else
+      jq -nc --arg e "could not enable $failures timer(s); see the log" '{ok:false, error:$e}' >&3
+    fi
+    return 0
+  fi
   [ "$failures" = "0" ]
 }
 
@@ -1995,8 +2152,10 @@ omarchy-time-machine $VERSION
   ls --dest <name> --snapshot <id> --path </abs> --json
   restore --dest <name> --snapshot <id> --path </abs> [--target <dir>]
   check --dest <name>                 verify repository integrity
-  install                             (re)write and enable the systemd units
+  install [--json]                    (re)write and enable the systemd units
   config create                       write a starter configuration
+  config show [--json]                print the configuration
+  config write [--json]               replace the configuration with the JSON on stdin
   log [--dest <name>]                 path of the most recent log file
   demo on|off|status                  invented data for screenshots; writes become no-ops
 TEXT

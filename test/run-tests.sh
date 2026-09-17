@@ -641,6 +641,102 @@ check $? "running it again leaves an existing configuration alone"
 
 cp "$CONFIG_BACKUP" "$CONFIG"
 
+# --- the settings view -----------------------------------------------------
+#
+# The panel edits config.json through `config show` and `config write`, and
+# runs the setup steps through the --json forms of key, init and install.
+# Everything it sends back must round-trip, and every answer must be one line
+# of JSON on stdout -- prose belongs on stderr, where QML never looks.
+
+group "Editing the configuration from the panel"
+
+$CLI config show --json | jq -e '.ok == true and .exists == true and .config.destinations[0].name == "test"' >/dev/null 2>&1
+check $? "config show --json hands the panel the whole file"
+
+CONFIG_BACKUP="$WORK/config.before-panel"
+cp "$CONFIG" "$CONFIG_BACKUP"
+
+# A key this script knows nothing about must come back exactly as it went in:
+# the form edits what it understands and passes the rest through.
+jq '.destinations[0].display_name = "Drive in my bag" | .somebody_elses_key = {"kept": true}' "$CONFIG_BACKUP" \
+  | $CLI config write --json | jq -e '.ok == true' >/dev/null 2>&1
+check $? "config write --json accepts a good configuration"
+
+jq -e '.somebody_elses_key.kept == true and .destinations[0].display_name == "Drive in my bag"' "$CONFIG" >/dev/null 2>&1
+check $? "and writes it back whole, unknown keys included"
+
+[ "$(stat -c %a "$CONFIG")" = "600" ]
+check $? "and the file is not world readable"
+
+OUT="$(printf '{"destinations":[{"repository":"/x"}]}' | $CLI config write --json)"
+jq -e '.ok == false and (.error | test("needs a name"))' >/dev/null 2>&1 <<<"$OUT"
+check $? "a destination without a name is refused with the same message status gives"
+
+jq -e '.somebody_elses_key.kept == true' "$CONFIG" >/dev/null 2>&1
+check $? "and the file on disk is untouched by the refusal"
+
+if command -v systemd-analyze >/dev/null 2>&1; then
+  OUT="$(jq '.destinations[0].schedule = "every tuesday-ish"' "$CONFIG_BACKUP" | $CLI config write --json)"
+  jq -e '.ok == false and (.error | test("schedule of test"))' >/dev/null 2>&1 <<<"$OUT"
+  check $? "a schedule systemd would not accept is refused before the timer finds out"
+fi
+
+OUT="$(printf 'not json at all' | $CLI config write --json)"
+jq -e '.ok == false' >/dev/null 2>&1 <<<"$OUT"
+check $? "garbage is refused as JSON, not as a crash"
+
+cp "$CONFIG_BACKUP" "$CONFIG"
+
+# --- the password, from the panel --------------------------------------------
+
+group "The password, from the panel"
+
+$CLI status --json | jq -e '.destinations[0].key_present == true' >/dev/null 2>&1
+check $? "status reports that a key is present, without reading it"
+
+OUT="$(printf 'test-password\n' | $CLI key set --dest test --json)"
+[ "$(wc -l <<<"$OUT")" = "1" ] && jq -e '.ok == true and (.path | endswith("test.key"))' >/dev/null 2>&1 <<<"$OUT"
+check $? "key set --json answers with one line of JSON and nothing else"
+
+[ "$($CLI key show --dest test --json | jq -r '.key')" = "test-password" ]
+check $? "key show --json returns the key for the panel to show or copy"
+
+OUT="$($CLI key show --dest nope --json)"
+jq -e '.ok == false' >/dev/null 2>&1 <<<"$OUT"
+check $? "and an unknown destination is a JSON error, not a shell one"
+
+KEYLESS="$WORK/keyless"
+mkdir -p "$KEYLESS/config/omarchy-time-machine"
+# Without the password_file that `key set` recorded above, or the fresh name
+# would still resolve to the existing key.
+jq '.destinations[0].name = "fresh" | del(.destinations[0].password_file)' "$CONFIG" \
+  > "$KEYLESS/config/omarchy-time-machine/config.json"
+XDG_CONFIG_HOME="$KEYLESS/config" XDG_STATE_HOME="$KEYLESS/state" $CLI status --json \
+  | jq -e '.destinations[0].key_present == false' >/dev/null 2>&1
+check $? "a destination without a key file says so"
+
+# --- the repository and the schedule, from the panel ------------------------
+
+group_restic "The repository, from the panel"
+
+OUT="$($CLI init --dest test --json 2>/dev/null)"
+[ "$(wc -l <<<"$OUT")" = "1" ] && jq -e '.ok == true and .already == true' >/dev/null 2>&1 <<<"$OUT"
+check $? "init --json on an existing repository is a success that says so"
+
+group "The schedule, from the panel"
+
+# install cannot enable anything under a redirected XDG_CONFIG_HOME, and says
+# so. What matters here is the shape of the answer: JSON alone on stdout.
+OUT="$($CLI install --json 2>/dev/null)"
+[ "$(wc -l <<<"$OUT")" = "1" ] && jq -e 'has("ok")' >/dev/null 2>&1 <<<"$OUT"
+check $? "install --json keeps its commentary off stdout"
+
+# Captured first, for the same pipefail reason as everywhere else in this file:
+# grep -q hangs up as soon as it has its match, and the CLI is still talking.
+ERR="$($CLI install --json 2>&1 >/dev/null)"
+grep -q 'Writing units' <<<"$ERR"
+check $? "and puts it on stderr instead"
+
 # --- demo mode -------------------------------------------------------------
 #
 # Screenshots must never show a real home directory, and a click while posing
