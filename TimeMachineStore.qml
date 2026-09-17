@@ -612,6 +612,87 @@ Singleton {
     }
   }
 
+  // --- the exclude list ---------------------------------------------------
+
+  // Every line of the exclude file, verbatim, comments and blanks included.
+  // The settings view edits the lines it recognises as patterns and hands the
+  // rest back exactly as they came, so a note somebody wrote next to an entry
+  // is not lost the first time the list is edited from the panel.
+  property var excludeLines: []
+  property string excludePath: ""
+  property bool excludeIsDefault: true
+  property bool excludeExists: false
+  property bool excludesLoaded: false
+  property bool excludesBusy: false
+  property string excludesError: ""
+  signal excludesSaved()
+
+  function loadExcludes() {
+    if (excludesBusy) return
+    excludesBusy = true
+    excludesError = ""
+    excludesShowProc.running = true
+  }
+
+  Process {
+    id: excludesShowProc
+    command: [root.cli, "excludes", "show", "--json"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        root.excludesBusy = false
+        var a = root.answer(text, "could not read the list of things to skip")
+        if (!a.ok) {
+          root.excludesError = a.error
+          return
+        }
+        root.excludeLines = a.payload.lines || []
+        root.excludePath = a.payload.path ? String(a.payload.path) : ""
+        root.excludeIsDefault = a.payload.is_default !== false
+        root.excludeExists = a.payload.exists === true
+        root.excludesLoaded = true
+      }
+    }
+  }
+
+  property bool excludesSaveBusy: false
+
+  // The whole file goes out on stdin, the same way the configuration does:
+  // one document in, one document out, never a patch. Which file that is, is
+  // the CLI's business -- it resolves exclude_file against the configuration,
+  // and a panel that worked it out for itself would be a second answer to the
+  // same question, free to disagree.
+  function saveExcludes(lines) {
+    if (excludesSaveBusy) return
+    excludesSaveBusy = true
+    excludesError = ""
+    excludesWriteProc.payload = lines.length === 0 ? "" : lines.join("\n") + "\n"
+    excludesWriteProc.stdinEnabled = true
+    excludesWriteProc.running = true
+  }
+
+  Process {
+    id: excludesWriteProc
+    property string payload: ""
+    command: [root.cli, "excludes", "write", "--json"]
+    onStarted: {
+      write(payload)
+      payload = ""
+      stdinEnabled = false
+    }
+    stdout: StdioCollector {
+      onStreamFinished: {
+        root.excludesSaveBusy = false
+        var a = root.answer(text, "could not save the list of things to skip")
+        if (!a.ok) {
+          root.excludesError = a.error
+          return
+        }
+        root.loadExcludes()
+        root.excludesSaved()
+      }
+    }
+  }
+
   // --- the password -------------------------------------------------------
 
   property string keyBusyFor: ""

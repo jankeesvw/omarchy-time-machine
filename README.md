@@ -134,7 +134,7 @@ Every one of these is on the settings page in the panel; the table gives the nam
 | Setting | Default | What it's for |
 |---|---|---|
 | `source` | your home folder | What gets backed up. A path, or a list of them: `["~", "/etc", "/srv/data"]`. If one is missing the backup stops rather than quietly taking half of it. |
-| `exclude_file` | `excludes.txt` next to your config | Things to skip. Caches, downloads, virtual machine images. Anything you can get back another way. |
+| `exclude_file` | `excludes.txt` next to your config | Where the list of things to skip is kept. The list itself is edited on the settings page; point this somewhere else to keep it in your dotfiles. |
 | `retention` | 7 daily, 4 weekly, 12 monthly, 3 yearly | How far back you can go. Older backups get thinned out rather than kept forever. |
 | `schedule` | none | When it runs. `"*-*-* 03:00:00"` is every night at three. Leave it out and this destination only runs when you press the button. |
 | `display_name` | the `name` | What the panel calls it. "The drive in my bag" reads better than `usb2`. |
@@ -150,6 +150,30 @@ Times show on a 24-hour clock, to match the Omarchy clock next to it. If you'd r
 ```json
 { "id": "jankeesvw.time-machine", "timeFormat": "h:mm AP" }
 ```
+
+### Leaving things out
+
+Caches, downloads, virtual machine images, a second copy of something that already lives in the cloud: anything you could get back another way is worth keeping out of a backup, and out of the hours it takes to push it over the network.
+
+The settings page has this as a list. **Leave a folder out…** opens a folder browser inside the panel — arrows move, Enter opens a folder, Backspace goes up, and typing filters — and the folder you pick joins the list. **Back it up again** takes one off.
+
+The list lives in a plain text file, one pattern per line, and it is still yours to edit by hand:
+
+```
+/home/you/Dropbox
+/home/you/.cache
+node_modules
+```
+
+A pattern with a slash in it is matched against the whole path, so `/home/you/Dropbox` skips that folder and nothing else. A bare name matches anywhere, so `node_modules` skips every one of them, wherever it is. Lines starting with `#` are comments, and the panel keeps them: editing the list from the settings page will not strip the note you left next to an entry.
+
+From the terminal:
+
+```bash
+omarchy-time-machine excludes show           # what is being skipped, and where that list lives
+```
+
+One thing worth knowing: a pattern only applies to backups made after you add it. Snapshots that already hold a folder keep holding it until retention thins them out.
 
 ### If your destination isn't always there
 

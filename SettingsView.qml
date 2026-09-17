@@ -30,7 +30,7 @@ FocusScope {
   // The escape hatch: open config.json in the editor instead.
   signal editFile()
 
-  implicitHeight: column.implicitHeight
+  implicitHeight: root.pickerFor !== "" ? picker.implicitHeight : column.implicitHeight
 
   // --- the draft ------------------------------------------------------------
 
@@ -50,7 +50,118 @@ FocusScope {
   property int expanded: -1
   property string editingKeyFor: ""
 
-  readonly property bool busy: TimeMachineStore.saveBusy || TimeMachineStore.installBusy
+  // --- the exclude list, as a draft -------------------------------------------
+
+  // The file's lines exactly as they came, with pattern lines edited in place.
+  // Comments and blanks ride along untouched: somebody's "# the VM images, I
+  // can rebuild those" must not disappear because a form had no field for it.
+  property var excludeDraft: []
+  property bool excludesDirty: false
+  property bool showExcludeFile: false
+
+  // Which field the folder picker is open for, "" while it is closed.
+  property string pickerFor: ""
+
+  // Unsaved work is unsaved work, wherever it was typed. The Save button, the
+  // discard prompt and the back gesture all mean both drafts.
+  readonly property bool unsaved: root.dirty || root.excludesDirty
+
+  function isPatternLine(line) {
+    var t = String(line === undefined || line === null ? "" : line).trim()
+    return t !== "" && t.charAt(0) !== "#"
+  }
+
+  // What the list shows: the pattern lines, each remembering where it sits in
+  // the file so that removing a row takes out the line it actually came from.
+  readonly property var excludeRows: {
+    var out = []
+    for (var i = 0; i < root.excludeDraft.length; i++)
+      if (root.isPatternLine(root.excludeDraft[i]))
+        out.push({ line: i, text: String(root.excludeDraft[i]).trim() })
+    return out
+  }
+
+  function fromExcludes() {
+    root.excludeDraft = (TimeMachineStore.excludeLines || []).slice()
+    root.excludesDirty = false
+  }
+
+  function addExclude(path) {
+    var p = String(path).trim()
+    if (p === "") return
+    // Adding the same folder twice is a no-op rather than a second line: two
+    // identical patterns do nothing except make the list harder to read.
+    for (var i = 0; i < root.excludeDraft.length; i++)
+      if (String(root.excludeDraft[i]).trim() === p) return
+    var next = root.excludeDraft.slice()
+    next.push(p)
+    root.excludeDraft = next
+    root.excludesDirty = true
+    root.problem = ""
+  }
+
+  function removeExclude(line) {
+    if (line < 0 || line >= root.excludeDraft.length) return
+    var next = root.excludeDraft.slice()
+    next.splice(line, 1)
+    root.excludeDraft = next
+    root.excludesDirty = true
+  }
+
+  function openPicker(which) {
+    root.pickerFor = which
+    picker.open(which === "source" ? root.firstSourcePath() : root.homePath)
+  }
+
+  function closePicker() {
+    root.pickerFor = ""
+    root.takeFocus()
+  }
+
+  readonly property string homePath: TimeMachineStore.homeDir
+
+  // The picker opens where the field already points, so "change this" starts
+  // from what it is now rather than from the top of the home folder.
+  function firstSourcePath() {
+    var first = root.source.split(",")[0]
+    first = first === undefined ? "" : first.trim()
+    if (first === "" || first === "~") return root.homePath
+    if (first.indexOf("~/") === 0) return root.homePath + first.slice(1)
+    if (first.charAt(0) !== "/") return root.homePath
+    return first
+  }
+
+  // Back the other way: a path inside the home folder reads better as ~/x,
+  // and that is what somebody editing the field by hand would have typed.
+  function tildify(p) {
+    if (root.homePath === "") return p
+    if (p === root.homePath) return "~"
+    if (p.indexOf(root.homePath + "/") === 0) return "~" + p.slice(root.homePath.length)
+    return p
+  }
+
+  function chooseFolder(path) {
+    if (root.pickerFor === "source") {
+      // Added to the list rather than put in place of it: picking a second
+      // folder should not silently drop the first one, and the field is still
+      // there to edit by hand when something has to come out.
+      var want = root.tildify(path)
+      var parts = root.source.split(",").map(function(x) { return x.trim() })
+                             .filter(function(x) { return x !== "" })
+      if (parts.indexOf(want) === -1) parts.push(want)
+      root.source = parts.join(", ")
+      root.dirty = true
+      root.problem = ""
+    } else if (root.pickerFor === "exclude") {
+      // Excludes go in as full paths: restic matches a pattern with a slash in
+      // it against the whole path, and "~" means nothing to it.
+      root.addExclude(path)
+    }
+    root.closePicker()
+  }
+
+  readonly property bool busy: TimeMachineStore.saveBusy || TimeMachineStore.excludesSaveBusy
+                               || TimeMachineStore.installBusy
                                || TimeMachineStore.keyBusyFor !== ""
                                || TimeMachineStore.initBusyFor !== ""
 
@@ -233,7 +344,14 @@ FocusScope {
     var p = validate()
     root.problem = p
     if (p !== "") return
-    TimeMachineStore.saveConfig(toConfig())
+    // The exclude list follows the configuration rather than travelling with
+    // it: which file it lands in is whatever the saved configuration names, so
+    // the configuration has to reach the disk first. onConfigSaved picks the
+    // list up from there.
+    if (root.dirty || !TimeMachineStore.configExists)
+      TimeMachineStore.saveConfig(toConfig())
+    else if (root.excludesDirty)
+      TimeMachineStore.saveExcludes(root.excludeDraft)
   }
 
   function edit(index, key, value) {
@@ -294,11 +412,12 @@ FocusScope {
   function confirmAccept() {
     discardConfirm.opened = false
     root.dirty = false
+    root.excludesDirty = false
     root.back()
   }
 
   function requestBack() {
-    if (root.dirty) {
+    if (root.unsaved) {
       keySink.forceActiveFocus()
       discardConfirm.opened = true
     } else {
@@ -335,7 +454,11 @@ FocusScope {
     TimeMachineStore.installError = ""
     TimeMachineStore.installNotice = ""
     TimeMachineStore.saveError = ""
+    TimeMachineStore.excludesError = ""
+    TimeMachineStore.loadExcludes()
     root.fromConfig()
+    root.fromExcludes()
+    root.pickerFor = ""
     root.takeFocus()
   }
 
@@ -356,7 +479,12 @@ FocusScope {
     // A fresh read of the file replaces an unedited form; an edited one is
     // the user's, and is left alone until they save or discard it.
     function onConfigChanged() { if (!root.dirty) root.fromConfig() }
-    function onConfigSaved() { root.dirty = false }
+    function onConfigSaved() {
+      root.dirty = false
+      if (root.excludesDirty) TimeMachineStore.saveExcludes(root.excludeDraft)
+    }
+    function onExcludeLinesChanged() { if (!root.excludesDirty) root.fromExcludes() }
+    function onExcludesSaved() { root.excludesDirty = false }
   }
 
   // --- pieces -----------------------------------------------------------------
@@ -428,9 +556,28 @@ FocusScope {
 
   // --- layout -----------------------------------------------------------------
 
+  // The folder picker takes the whole view while it is up, rather than opening
+  // over the form: the form is a column of text fields, and a chooser floating
+  // on top of it reads as two things at once.
+  FolderPicker {
+    id: picker
+    anchors.fill: parent
+    visible: root.pickerFor !== ""
+    heading: root.pickerFor === "exclude" ? "Which folder should be left out?"
+                                          : "Which folder should be backed up?"
+    chooseLabel: root.pickerFor === "exclude" ? "Leave this one out" : "Back this one up"
+    foreground: root.foreground
+    dim: root.dim
+    accent: root.accent
+    fontFamily: root.fontFamily
+    onChosen: function(path) { root.chooseFolder(path) }
+    onCancelled: root.closePicker()
+  }
+
   Flickable {
     id: scroll
     anchors.fill: parent
+    visible: root.pickerFor === ""
     contentWidth: width
     contentHeight: column.implicitHeight
     clip: true
@@ -480,11 +627,11 @@ FocusScope {
           id: saveButton
           anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
-          text: TimeMachineStore.saveBusy ? "Saving…"
-                : (root.dirty || !TimeMachineStore.configExists) ? "Save" : "Saved"
-          active: root.dirty
-          enabled: !TimeMachineStore.saveBusy
-                   && (root.dirty || !TimeMachineStore.configExists)
+          text: TimeMachineStore.saveBusy || TimeMachineStore.excludesSaveBusy ? "Saving…"
+                : (root.unsaved || !TimeMachineStore.configExists) ? "Save" : "Saved"
+          active: root.unsaved
+          enabled: !TimeMachineStore.saveBusy && !TimeMachineStore.excludesSaveBusy
+                   && (root.unsaved || !TimeMachineStore.configExists)
           opacity: enabled ? 1 : 0.5
           onClicked: root.save()
         }
@@ -495,6 +642,7 @@ FocusScope {
         color: root.urgent
         text: root.problem !== "" ? root.problem
               : TimeMachineStore.saveError !== "" ? TimeMachineStore.saveError
+              : TimeMachineStore.excludesError !== "" ? TimeMachineStore.excludesError
               : TimeMachineStore.configLoadError
       }
 
@@ -520,15 +668,118 @@ FocusScope {
           label: "Folders"
           value: root.source
           placeholder: "~"
-          hint: "Your home folder, or several paths separated by commas: ~, /etc, /srv/data"
+          hint: "“~” is your whole home folder, which is what most people want. Add more places with the button, or separate them with commas."
           onEdited: function(text) { root.source = text; root.dirty = true; root.problem = "" }
         }
 
+        Action {
+          text: "Add a folder…"
+          onClicked: root.openPicker("source")
+        }
+
+        // --- what to leave out ----------------------------------------------------
+
+        PanelSectionHeader {
+          text: "What to leave out"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+        }
+
+        Caption {
+          text: "These folders stay out of every backup. Caches, downloads, anything you could get back another way."
+        }
+
+        Caption {
+          visible: !TimeMachineStore.excludesLoaded && TimeMachineStore.excludesError === ""
+          text: "Reading the list…"
+        }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(2)
+          visible: root.excludeRows.length > 0
+
+          Repeater {
+            model: root.excludeRows
+
+            delegate: Item {
+              id: excludeRow
+              required property var modelData
+
+              width: parent.width
+              height: Style.space(22)
+
+              Rectangle {
+                anchors.fill: parent
+                radius: Style.cornerRadius
+                color: rowHover.containsMouse
+                       ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+                       : "transparent"
+              }
+
+              MouseArea {
+                id: rowHover
+                anchors.fill: parent
+                hoverEnabled: true
+                acceptedButtons: Qt.NoButton
+              }
+
+              Text {
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(6)
+                anchors.right: dropRow.left
+                anchors.rightMargin: Style.space(8)
+                anchors.verticalCenter: parent.verticalCenter
+                // These come out of a file somebody can write by hand. On
+                // AutoText a line containing markup would be rendered as rich
+                // text, from the shell process. See RestoreRow.
+                text: root.tildify(excludeRow.modelData.text)
+                textFormat: Text.PlainText
+                elide: Text.ElideMiddle
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              Action {
+                id: dropRow
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Back it up again"
+                bordered: false
+                opacity: rowHover.containsMouse ? 1 : 0.6
+                onClicked: root.removeExclude(excludeRow.modelData.line)
+              }
+            }
+          }
+        }
+
+        Caption {
+          visible: TimeMachineStore.excludesLoaded && root.excludeRows.length === 0
+          text: "Nothing is being left out, so everything in the folders above goes into the backup."
+        }
+
+        Action {
+          text: "Leave a folder out…"
+          onClicked: root.openPicker("exclude")
+        }
+
+        MenuRow {
+          width: parent.width
+          label: root.showExcludeFile ? "Fewer options" : "More options…"
+          foreground: root.dim
+          fontFamily: root.fontFamily
+          onClicked: root.showExcludeFile = !root.showExcludeFile
+        }
+
         Field {
-          label: "Skip what is listed in"
+          visible: root.showExcludeFile
+          label: "Keep that list in"
           value: root.excludeFile
-          placeholder: "excludes.txt next to config.json"
-          hint: "A file of patterns, one per line, restic style: caches, downloads, anything you can get back another way. Empty means excludes.txt next to config.json."
+          placeholder: TimeMachineStore.excludePath !== "" && TimeMachineStore.excludeIsDefault
+                       ? root.tildify(TimeMachineStore.excludePath)
+                       : "excludes.txt next to config.json"
+          hint: "The file the list above is saved to, one pattern per line. Leave it empty to keep it next to config.json, or point it at your dotfiles to keep the list with them."
           onEdited: function(text) { root.excludeFile = text; root.dirty = true; root.problem = "" }
         }
 
@@ -821,7 +1072,7 @@ FocusScope {
                 Text {
                   width: parent.width
                   visible: card.kind !== "cloud"
-                  text: card.probeBusy ? "Checking\u2026"
+                  text: card.probeBusy ? "Checking…"
                         : !card.probed ? (card.kind === "nas" ? "Connection not tested yet" : "Drive not checked yet")
                         : TimeMachineStore.probeReady ? (card.kind === "nas" ? "Connected" : "Drive is there")
                         : (card.kind === "nas" ? "Not reachable yet" : "Drive not found")
@@ -844,7 +1095,7 @@ FocusScope {
 
                   Action {
                     visible: card.kind === "nas"
-                    text: "Install SSH Key\u2026"
+                    text: "Install SSH Key…"
                     onClicked: TimeMachineStore.installSshKey(card.modelData.origName)
                   }
                 }

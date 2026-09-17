@@ -369,6 +369,20 @@ select_destination() {
 
 dest() { jq -r "$1" <<<"$DEST_JSON"; }
 
+# Where the list of things to skip lives: the configured exclude_file, or
+# excludes.txt next to config.json when nothing is configured. Printed whether
+# or not the file is there yet, because the panel offers to create it and the
+# backup has to tell the two cases apart -- a configured file that is missing
+# is an error, a default one that is missing simply means nothing to exclude.
+exclude_file_path() {
+  local configured
+  configured="$(expand_tilde "$(cfg '.exclude_file // empty')")"
+  [ -n "$configured" ] && { printf '%s' "$configured"; return 0; }
+  printf '%s' "$CONFIG_DIR/excludes.txt"
+}
+
+exclude_file_configured() { [ -n "$(cfg '.exclude_file // empty')" ]; }
+
 # What a human sees. `name` is an identifier -- it names the key file, the
 # systemd unit and the log directory -- so it is deliberately restricted to a
 # safe character set. display_name carries no such constraint and is free to
@@ -1201,11 +1215,11 @@ cmd_backup() {
   # asked for it, and silently backing up everything you meant to skip is worse
   # than stopping. The default one is optional -- if it is not there, there is
   # simply nothing to exclude.
-  exclude_file="$(expand_tilde "$(cfg '.exclude_file // empty')")"
-  if [ -n "$exclude_file" ]; then
+  exclude_file="$(exclude_file_path)"
+  if exclude_file_configured; then
     user_file "$exclude_file" || die "exclude_file is missing: $exclude_file"
-  elif user_file "$CONFIG_DIR/excludes.txt"; then
-    exclude_file="$CONFIG_DIR/excludes.txt"
+  else
+    user_file "$exclude_file" || exclude_file=""
   fi
   [ -n "$exclude_file" ] && backup_args+=(--exclude-file "$exclude_file")
   while IFS= read -r pattern; do
@@ -2009,6 +2023,93 @@ config_write() {
 }
 
 # ---------------------------------------------------------------------------
+# The exclude list
+# ---------------------------------------------------------------------------
+
+# The panel edits this as a list of folders, but the file is a plain text file
+# a person may well have written by hand, with comments in it explaining why
+# something is skipped. So `show` hands back every line verbatim, comments and
+# blanks included, and `write` takes the whole file back the same way: the
+# panel edits the pattern lines it understands and returns the rest untouched.
+# Nobody's "# the VM images, I can rebuild those" note disappears because a
+# form did not have a field for it.
+EXCLUDES_BYTE_CAP=$((256 * 1024))
+
+cmd_excludes() {
+  local action="${1:-}"
+  [ "$#" -gt 0 ] && shift
+  parse_options "$@"
+  load_config
+
+  case "$action" in
+    show) excludes_show; return $? ;;
+    write) excludes_write; return $? ;;
+    "") die "usage: excludes show|write" ;;
+    *) die "unknown excludes command: $action" ;;
+  esac
+}
+
+excludes_show() {
+  local path exists=false is_default=true
+  path="$(exclude_file_path)"
+  user_file "$path" && exists=true
+  exclude_file_configured && is_default=false
+
+  if [ "$OPT_JSON" = "1" ]; then
+    JSON_MODE=1
+    if [ "$exists" = "false" ]; then
+      jq -nc --arg p "$path" --argjson d "$is_default" \
+        '{ok:true, exists:false, is_default:$d, path:$p, lines:[]}'
+      return 0
+    fi
+    # -R -s -n keeps empty lines and trailing whitespace exactly as they are;
+    # splitting on \n and dropping the final empty element avoids inventing a
+    # blank last line for a file that simply ends in a newline.
+    jq -Rsn --arg p "$path" --argjson d "$is_default" \
+      '{ok:true, exists:true, is_default:$d, path:$p,
+        lines:(input | split("\n") | if (length > 0 and .[-1] == "") then .[0:-1] else . end)}' \
+      -- "$path"
+    return 0
+  fi
+
+  if [ "$exists" = "false" ]; then
+    printf 'No exclude file yet. It would be %s\n' "$path"
+    return 0
+  fi
+  cat -- "$path"
+}
+
+# Replaces the exclude file with the lines on stdin. Same shape as
+# `config write`: the whole document in, the whole document out, never a patch.
+excludes_write() {
+  [ "$OPT_JSON" = "1" ] && JSON_MODE=1
+  demo_on && die "demo mode is on, so the exclude list is read-only until 'demo off'"
+
+  local path incoming
+  path="$(exclude_file_path)"
+
+  incoming="$(head -c "$((EXCLUDES_BYTE_CAP + 1))")"
+  over_byte_cap "$incoming" "$EXCLUDES_BYTE_CAP" && die "that is too long to be a list of exclude patterns"
+
+  # A file with nothing in it is a legitimate answer -- it means "skip nothing"
+  # -- so an empty body is written rather than refused. It must still end in a
+  # newline: restic reads this line by line.
+  [ -n "$incoming" ] && incoming="${incoming%$'\n'}"$'\n'
+
+  # Only the config directory is ours to harden. An exclude file the user
+  # stowed in their dotfiles keeps the permissions its own directory gives it.
+  [ "$(dirname -- "$path")" = "$CONFIG_DIR" ] && config_dir_secure
+
+  printf '%s' "$incoming" | write_private "$path" || die "could not write $path"
+
+  if [ "$JSON_MODE" = "1" ]; then
+    jq -nc --arg p "$path" '{ok:true, path:$p}'
+  else
+    printf 'Wrote %s\n' "$path"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # systemd
 # ---------------------------------------------------------------------------
 
@@ -2369,6 +2470,8 @@ omarchy-time-machine $VERSION
   config create                       write a starter configuration
   config show [--json]                print the configuration
   config write [--json]               replace the configuration with the JSON on stdin
+  excludes show [--json]              print the list of things to skip
+  excludes write [--json]             replace that list with the lines on stdin
   probe --dest <name> --json          can this destination be reached, and if not, why
   ssh install-key --dest <name>       put this computer's SSH key on a NAS (asks its password once)
   log [--dest <name>]                 path of the most recent log file
@@ -2395,6 +2498,7 @@ main() {
     report-failure) cmd_report_failure "$@" ;;
     log) cmd_log "$@" ;;
     config) cmd_config "$@" ;;
+    excludes) cmd_excludes "$@" ;;
     probe) cmd_probe "$@" ;;
     ssh) cmd_ssh "$@" ;;
     demo) cmd_demo "$@" ;;

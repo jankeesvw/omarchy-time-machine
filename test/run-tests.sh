@@ -687,6 +687,63 @@ check $? "garbage is refused as JSON, not as a crash"
 
 cp "$CONFIG_BACKUP" "$CONFIG"
 
+# --- the exclude list, from the panel -----------------------------------------
+
+group "Editing the exclude list from the panel"
+
+EXCLUDES="$XDG_CONFIG_HOME/omarchy-time-machine/excludes.txt"
+rm -f "$EXCLUDES"
+
+# The suite's configuration points exclude_file at a file of its own. These
+# checks are about the default -- excludes.txt next to config.json -- so the
+# setting comes out for the duration and goes back at the end.
+cp "$CONFIG" "$WORK/config.before-excludes"
+jq 'del(.exclude_file)' "$WORK/config.before-excludes" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
+
+$CLI excludes show --json \
+  | jq -e '.ok == true and .exists == false and .is_default == true and (.path | endswith("/excludes.txt")) and (.lines | length) == 0' >/dev/null 2>&1
+check $? "excludes show --json reports where the list would go before there is one"
+
+# The panel edits the pattern lines and hands back everything else untouched,
+# so a comment explaining why something is skipped has to survive the trip.
+printf '# the VM images, I can rebuild those\n\n/home/someone/VMs\n/home/someone/Downloads\n' \
+  | $CLI excludes write --json | jq -e '.ok == true' >/dev/null 2>&1
+check $? "excludes write --json accepts a list"
+
+$CLI excludes show --json \
+  | jq -e '.lines == ["# the VM images, I can rebuild those", "", "/home/someone/VMs", "/home/someone/Downloads"]' >/dev/null 2>&1
+check $? "and comments and blank lines come back exactly as they went in"
+
+[ "$(stat -c %a "$EXCLUDES")" = "600" ]
+check $? "and the file is not world readable"
+
+[ "$(tail -c 2 "$EXCLUDES" | od -An -c | tr -d ' ')" = "s\\n" ]
+check $? "and it ends in exactly one newline, because restic reads it line by line"
+
+printf '' | $CLI excludes write --json | jq -e '.ok == true' >/dev/null 2>&1
+check $? "an empty list is a legitimate answer, not an error"
+
+[ ! -s "$EXCLUDES" ]
+check $? "and it empties the file rather than leaving the old patterns behind"
+
+OUT="$(head -c 300000 /dev/zero | tr '\0' 'x' | $CLI excludes write --json)"
+jq -e '.ok == false and (.error | test("too long"))' >/dev/null 2>&1 <<<"$OUT"
+check $? "something far too large to be a list of patterns is refused"
+
+# An exclude_file the user pointed somewhere else is the one the panel edits:
+# the panel must never resolve this path for itself.
+ELSEWHERE="$WORK/dotfiles-excludes.txt"
+jq --arg p "$ELSEWHERE" '.exclude_file = $p' "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
+$CLI excludes show --json | jq -e --arg p "$ELSEWHERE" '.path == $p and .is_default == false' >/dev/null 2>&1
+check $? "a configured exclude_file is the one show reports, and it says it is not the default"
+
+printf '/home/someone/elsewhere\n' | $CLI excludes write --json >/dev/null 2>&1
+[ "$(cat "$ELSEWHERE" 2>/dev/null)" = "/home/someone/elsewhere" ]
+check $? "and the one write writes to"
+
+cp "$WORK/config.before-excludes" "$CONFIG"
+rm -f "$EXCLUDES" "$ELSEWHERE"
+
 # --- the password, from the panel --------------------------------------------
 
 group "The password, from the panel"
