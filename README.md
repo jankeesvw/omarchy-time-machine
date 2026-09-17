@@ -69,6 +69,14 @@ An external drive is the easy case. It also does a NAS over SSH, or a bucket in 
 
 List more than one and the panel lists them all, each with its own schedule and its own history.
 
+### A NAS over SSH
+
+Pick **A NAS over SSH** on the settings page and fill in the user, the address and a folder. The panel then has two buttons that do the fiddly part: **Install SSH Key** puts this computer's key on the NAS (it asks the NAS password once, so the nightly run never has to), and **Test Connection** tells you which step is still missing rather than "repository not found" at three in the morning.
+
+Any NAS needs four things first: SSH switched on, SFTP switched on (often a separate switch, and restic speaks SFTP), a user who is allowed to log in over SSH, and a shared folder that user can write to. The form lists where each of those lives on a Synology: Control Panel › Terminal & SNMP for SSH, Control Panel › File Services › FTP for SFTP, the administrators group plus the user home service (Control Panel › User & Group) for the login, and Control Panel › Shared Folder for the folder. Mind that some servers show a different tree over SFTP than in a shell: on a Synology a shared folder called `backups` is `/backups`, not the `/volume1/backups` you would see in a shell. Test Connection lists what is there if you get it wrong.
+
+The nightly run logs in with `~/.ssh/id_ed25519`, so that key must not have a passphrase; there is nobody there to type it. If yours does, make one without and install that instead.
+
 Anywhere restic can write works: a local disk, SFTP, a REST server, S3, Minio, Wasabi, Backblaze B2, Azure Blob, Google Cloud Storage, Alibaba OSS, OpenStack Swift, or anything rclone can reach. A drive in your bag and a bucket in the cloud is a good pair: one is fast, the other survives your house.
 
 ## Pick a password

@@ -737,6 +737,47 @@ ERR="$($CLI install --json 2>&1 >/dev/null)"
 grep -q 'Writing units' <<<"$ERR"
 check $? "and puts it on stderr instead"
 
+# --- checking a destination ---------------------------------------------------
+#
+# The panel's Test Connection button. It must say which step failed, in words
+# that name the fix, and it must never need the repository password to do so.
+
+group "Checking a destination"
+
+PROBE="$WORK/probe"
+mkdir -p "$PROBE/config/omarchy-time-machine" "$PROBE/here"
+probe_with() {  # $1 = repository
+  jq --arg r "$1" '.destinations[0].repository = $r | del(.destinations[0].password_file)' "$CONFIG" \
+    > "$PROBE/config/omarchy-time-machine/config.json"
+  XDG_CONFIG_HOME="$PROBE/config" XDG_STATE_HOME="$PROBE/state" $CLI probe --dest test --json
+}
+
+probe_with "$PROBE/here" | jq -e '.ok == true and .ready == true and .stage == "ready"' >/dev/null 2>&1
+check $? "a local folder that exists is ready"
+
+probe_with "$PROBE/here/restic" | jq -e '.ready == true' >/dev/null 2>&1
+check $? "so is a folder whose parent exists, since init creates it"
+
+probe_with "$PROBE/nowhere/at/all" | jq -e '.ready == false and .stage == "mount" and (.message | test("plugged in"))' >/dev/null 2>&1
+check $? "a missing folder asks whether the drive is mounted"
+
+probe_with "sftp://nobody@127.0.0.1:1/volume1/backup" | jq -e '.ready == false and .stage == "ssh_off" and (.message | test("Enable SSH"))' >/dev/null 2>&1
+check $? "a NAS with nothing on the SSH port is told where the switch is"
+
+probe_with "sftp:nobody@" | jq -e '.ok == false' >/dev/null 2>&1
+check $? "a malformed sftp address is refused as such"
+
+probe_with "s3:s3.amazonaws.com/bucket" | jq -e '.ready == false and .stage == "untested"' >/dev/null 2>&1
+check $? "a cloud destination says it cannot be checked from here"
+
+ls "$PROBE/config/omarchy-time-machine/"*.key >/dev/null 2>&1
+[ $? -ne 0 ]
+check $? "and none of that needed a key file"
+
+OUT="$(XDG_CONFIG_HOME="$PROBE/config" $CLI ssh install-key --dest test 2>&1)"
+grep -q "not an sftp" <<<"$OUT"
+check $? "install-key refuses a destination that is not a NAS"
+
 # --- demo mode -------------------------------------------------------------
 #
 # Screenshots must never show a real home directory, and a click while posing

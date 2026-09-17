@@ -23,6 +23,8 @@
 #   omarchy-time-machine install [--json]      write and enable the systemd units
 #   omarchy-time-machine config show [--json]  print the configuration
 #   omarchy-time-machine config write [--json] replace it with the JSON on stdin
+#   omarchy-time-machine probe --dest N --json  can this destination be reached?
+#   omarchy-time-machine ssh install-key --dest N  put this computer's key on a NAS
 #   omarchy-time-machine log [--dest N]
 #
 # Everything the README's setup walks through -- config create, key set, init,
@@ -1687,6 +1689,217 @@ stream_restore() {
 }
 
 # ---------------------------------------------------------------------------
+# Probing a destination
+#
+# Where a first backup fails, it fails at 03:00 with nobody watching, and the
+# reason is nearly always one of four things: the drive is not mounted, SSH is
+# not switched on at the NAS, the key is not accepted, or the folder is not
+# there. Each of those has a different fix, and "repository not found" names
+# none of them. This walks the steps in order and stops at the first that
+# fails, in words that say what to do next. Generic first, then where the
+# switch is on a Synology, since that is the NAS most people have.
+#
+# Read-only, and never needs the repository password: it asks the network
+# whether the door is open, not what is behind it.
+# ---------------------------------------------------------------------------
+
+SFTP_USER=""; SFTP_HOST=""; SFTP_PORT=""; SFTP_PATH=""
+
+# Both spellings restic accepts: sftp:user@host:/path and
+# sftp://user@host:port/path. Leaves the parts in the globals above.
+parse_sftp() {
+  local url="$1" rest
+  SFTP_USER=""; SFTP_HOST=""; SFTP_PORT="22"; SFTP_PATH=""
+  case "$url" in
+    sftp://*)
+      rest="${url#sftp://}"
+      [[ "$rest" =~ ^([^@/]+)@([^:/]+)(:([0-9]+))?(/.*)?$ ]] || return 1
+      SFTP_USER="${BASH_REMATCH[1]}"
+      SFTP_HOST="${BASH_REMATCH[2]}"
+      [ -n "${BASH_REMATCH[4]}" ] && SFTP_PORT="${BASH_REMATCH[4]}"
+      SFTP_PATH="${BASH_REMATCH[5]}"
+      ;;
+    sftp:*)
+      rest="${url#sftp:}"
+      [[ "$rest" =~ ^([^@:]+)@([^:]+):(.*)$ ]] || return 1
+      SFTP_USER="${BASH_REMATCH[1]}"
+      SFTP_HOST="${BASH_REMATCH[2]}"
+      SFTP_PATH="${BASH_REMATCH[3]}"
+      ;;
+    *) return 1 ;;
+  esac
+  [ -n "$SFTP_PATH" ] || SFTP_PATH="."
+  return 0
+}
+
+# Where a path stands, as the SFTP subsystem sees it: repo (there), parent
+# (its parent is there and writable), readonly, or none. Each question is one
+# sftp batch; a batch stops and exits non-zero at the first command that fails,
+# which is the whole test.
+sftp_batch() {
+  printf '%s\n' "$@" | sftp -P "$SFTP_PORT" -o BatchMode=yes -o ConnectTimeout=8 \
+    -o StrictHostKeyChecking=accept-new -b - "$SFTP_USER@$SFTP_HOST" >/dev/null 2>&1
+}
+
+sftp_where() {
+  local path="$1" parent="$2" scratch
+  sftp_batch "ls $path" && { printf 'repo'; return 0; }
+  sftp_batch "ls $parent" || { printf 'none'; return 0; }
+  scratch="$parent/.omarchy-time-machine-probe-$$"
+  if sftp_batch "mkdir $scratch" "rmdir $scratch"; then printf 'parent'; else printf 'readonly'; fi
+}
+
+# What the top level looks like over SFTP, for the message that says the
+# path is wrong: the names on offer are the fix.
+sftp_top_listing() {
+  local names
+  names="$(printf 'ls /\n' | sftp -P "$SFTP_PORT" -o BatchMode=yes -o ConnectTimeout=8 -b - \
+    "$SFTP_USER@$SFTP_HOST" 2>/dev/null | grep -v -E '^sftp>|^\*\*' | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')"
+  [ -n "$names" ] && printf 'At the top here: %s' "$names"
+  return 0
+}
+
+probe_answer() {
+  jq -nc --argjson r "$1" --arg s "$2" --arg m "$3" '{ok:true, ready:$r, stage:$s, message:$m}'
+}
+
+# The repository URL with its ${SECRETS} filled in, without dying when one is
+# missing: a probe that cannot even say "your .env is incomplete" is no probe.
+resolved_repository() {
+  load_secrets
+  substitute_vars "$(dest '.repository // empty')" 0
+  printf '%s' "$SUBST_RESULT"
+}
+
+ssh_probe() {
+  ssh -p "$SFTP_PORT" -o BatchMode=yes -o ConnectTimeout=8 \
+      -o StrictHostKeyChecking=accept-new "$SFTP_USER@$SFTP_HOST" "$@"
+}
+
+cmd_probe() {
+  JSON_MODE=1
+  parse_options "$@"
+  demo_on && { probe_answer true ready "Connected."; return 0; }
+  load_config
+  select_destination "$OPT_DEST"
+
+  local url parent where
+  url="$(resolved_repository)"
+  [ -n "$url" ] || die "destination $DEST_NAME has no repository yet"
+
+  case "$url" in
+    sftp:*)
+      parse_sftp "$url" || die "the repository of $DEST_NAME is not a valid sftp address; expected sftp:user@host:/path"
+
+      # 1. Is anything listening? On a Synology, SSH is off until somebody
+      #    turns it on, and the panel should say exactly where that switch is.
+      if ! timeout 5 bash -c "exec 3<>/dev/tcp/$SFTP_HOST/$SFTP_PORT" 2>/dev/null; then
+        probe_answer false ssh_off "Nothing answers on port $SFTP_PORT of $SFTP_HOST. Check the address, and that the SSH service is switched on at the other end. On a Synology that is Control Panel › Terminal & SNMP › Enable SSH service."
+        return 0
+      fi
+
+      # 2. Does the key get us in? accept-new also records the host key, which
+      #    the nightly run needs: it has no terminal to answer "yes" on.
+      if ! ssh_probe true >/dev/null 2>&1; then
+        probe_answer false auth "$SFTP_HOST is up, but would not let $SFTP_USER in with this computer's SSH key. Use Install SSH Key below, and make sure $SFTP_USER is allowed to log in over SSH at all. On a Synology that means the administrators group, with the user home service on under Control Panel › User & Group › Advanced."
+        return 0
+      fi
+
+      # 3. Does the sftp subsystem answer? On a Synology, SSH and SFTP are two
+      #    separate switches, and restic needs the second one. The subsystem
+      #    prints a binary version packet on success; a refusal is a one-line
+      #    complaint from ssh on stderr.
+      # Captured first: under pipefail the refusal's exit status would hide
+      # the match.
+      local sftp_out
+      sftp_out="$(ssh_probe -s sftp </dev/null 2>&1)"
+      if grep -q 'subsystem request failed' <<<"$sftp_out"; then
+        probe_answer false sftp_off "$SFTP_USER can log in to $SFTP_HOST, but it refuses SFTP, which is what restic speaks. Switch the SFTP service on; many NASes keep it separate from SSH. On a Synology it is Control Panel › File Services › FTP › Enable SFTP service."
+        return 0
+      fi
+
+      # 4. Is the folder there, and writable -- as seen over SFTP, which is
+      #    what restic uses. Not over the shell: a Synology chroots SFTP
+      #    sessions, so shared folders sit at the top (/backups) while the
+      #    shell sees them under /volume1, and a probe over the wrong one
+      #    would pass a path restic then cannot find.
+      parent="$(dirname -- "$SFTP_PATH")"
+      where="$(sftp_where "$SFTP_PATH" "$parent")"
+      case "$where" in
+        repo)   probe_answer true ready "Connected. $SFTP_PATH is there on $SFTP_HOST." ;;
+        parent) probe_answer true ready "Connected. $SFTP_USER can write to $parent on $SFTP_HOST; the repository folder is created inside it." ;;
+        readonly) probe_answer false path "Connected, but $SFTP_USER may not write to $parent on $SFTP_HOST. Give the user read/write on that shared folder." ;;
+        *)      probe_answer false path "Connected, but $parent is not there as seen over SFTP on $SFTP_HOST. Some servers show a different tree over SFTP than in a shell: on a Synology each shared folder sits at the top, so a shared folder called backups is /backups, not /volume1/backups. $(sftp_top_listing)" ;;
+      esac
+      ;;
+    /*|~*)
+      where="$(expand_tilde "$url")"
+      parent="$(dirname -- "$where")"
+      if [ -d "$where" ]; then
+        probe_answer true ready "The folder is there."
+      elif [ -d "$parent" ] && [ -w "$parent" ]; then
+        probe_answer true ready "$parent is there; the repository folder is created inside it."
+      else
+        probe_answer false mount "$where is not there. Is the drive plugged in and mounted? A drive usually appears under /run/media/$(id -un)/."
+      fi
+      ;;
+    *)
+      probe_answer false untested "A ${url%%:*}: destination cannot be checked from here. Create the repository; restic says so if it cannot reach it."
+      ;;
+  esac
+}
+
+# Puts this computer's public key on the NAS, so the nightly run can log in
+# with nobody there to type a password. Interactive on purpose: ssh-copy-id
+# asks for the NAS password once, and the panel opens this in a terminal.
+cmd_ssh() {
+  local action="${1:-}"
+  [ "$#" -gt 0 ] && shift
+  parse_options "$@"
+  case "$action" in
+    install-key) ;;
+    *) die "usage: ssh install-key --dest <name>" ;;
+  esac
+  load_config
+  select_destination "$OPT_DEST"
+  need ssh
+  need ssh-copy-id
+
+  local url key
+  url="$(resolved_repository)"
+  parse_sftp "$url" || die "destination $DEST_NAME is not an sftp: repository, so there is no NAS to give a key to"
+
+  # A key without a passphrase, because the backup runs at 03:00 and nobody
+  # is there to type one. Only made when there is no default key at all.
+  key="$HOME/.ssh/id_ed25519"
+  if ! compgen -G "$HOME/.ssh/id_*.pub" >/dev/null; then
+    printf 'This computer has no SSH key yet. Making one, without a passphrase, so the nightly run can use it.\n'
+    mkdir -p -m 700 -- "$HOME/.ssh"
+    ssh-keygen -q -t ed25519 -N "" -f "$key" -C "omarchy-time-machine@$(hostname 2>/dev/null || echo omarchy)" ||
+      die "could not create an SSH key"
+  elif [ -f "$key" ] && ! ssh-keygen -y -P "" -f "$key" >/dev/null 2>&1; then
+    printf 'Note: %s has a passphrase. A backup at 03:00 cannot type it; if the nightly run fails to log in, make a key without one.\n\n' "$key"
+  fi
+
+  printf 'Installing this computer\x27s SSH key for %s on %s (port %s).\n' "$SFTP_USER" "$SFTP_HOST" "$SFTP_PORT"
+  printf 'You will be asked for the password of %s on the NAS, once.\n\n' "$SFTP_USER"
+
+  if ! ssh-copy-id -p "$SFTP_PORT" -o StrictHostKeyChecking=accept-new "$SFTP_USER@$SFTP_HOST"; then
+    printf '\n'
+    die "ssh-copy-id did not get in. Make sure SSH is on and $SFTP_USER is allowed to log in over it. On a Synology: Control Panel > Terminal & SNMP for SSH, the administrators group for the user, and the user home service under User & Group > Advanced."
+  fi
+
+  printf '\nTrying to log in without a password...\n'
+  if ssh_probe true >/dev/null 2>&1; then
+    printf 'It works. Back in the panel: Test Connection, then Create Repository.\n'
+  else
+    printf 'The key is copied, but a password-less login still fails. That is almost always permissions on the home folder; sshd refuses keys it finds in a world-writable place.\n'
+    printf 'Log in to the NAS and run:\n\n  chmod 755 ~ && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys\n\n'
+    printf 'then press Test Connection in the panel again.\n'
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Starter configuration
 #
 # Opening an editor on a file that does not exist leaves you staring at an
@@ -2156,6 +2369,8 @@ omarchy-time-machine $VERSION
   config create                       write a starter configuration
   config show [--json]                print the configuration
   config write [--json]               replace the configuration with the JSON on stdin
+  probe --dest <name> --json          can this destination be reached, and if not, why
+  ssh install-key --dest <name>       put this computer's SSH key on a NAS (asks its password once)
   log [--dest <name>]                 path of the most recent log file
   demo on|off|status                  invented data for screenshots; writes become no-ops
 TEXT
@@ -2180,6 +2395,8 @@ main() {
     report-failure) cmd_report_failure "$@" ;;
     log) cmd_log "$@" ;;
     config) cmd_config "$@" ;;
+    probe) cmd_probe "$@" ;;
+    ssh) cmd_ssh "$@" ;;
     demo) cmd_demo "$@" ;;
     --version) printf '%s\n' "$VERSION" ;;
     ""|help|--help|-h) usage ;;

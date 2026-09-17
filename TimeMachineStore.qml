@@ -840,6 +840,58 @@ Singleton {
     return false
   }
 
+  // --- the connection -----------------------------------------------------
+  //
+  // Before a password or a repository: can the destination be reached at all?
+  // `probe` walks the steps -- listening, logged in, folder there -- and stops
+  // at the first that fails, in words that say what to do about it.
+
+  property string probeBusyFor: ""
+  property string probeFor: ""
+  property string probeStage: ""
+  property string probeMessage: ""
+  property bool probeReady: false
+
+  function clearProbe() {
+    probeFor = ""; probeStage = ""; probeMessage = ""; probeReady = false
+  }
+
+  function probeDestination(name) {
+    if (probeBusyFor !== "") return
+    clearProbe()
+    probeBusyFor = String(name)
+    probeProc.command = [root.cli, "probe", "--dest", String(name), "--json"]
+    probeProc.running = true
+  }
+
+  Process {
+    id: probeProc
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var name = root.probeBusyFor
+        root.probeBusyFor = ""
+        var a = root.answer(text, "could not check the destination")
+        root.probeFor = name
+        if (!a.ok) {
+          root.probeStage = "error"
+          root.probeReady = false
+          root.probeMessage = a.error
+          return
+        }
+        root.probeStage = String(a.payload.stage || "")
+        root.probeReady = a.payload.ready === true
+        root.probeMessage = String(a.payload.message || "")
+      }
+    }
+  }
+
+  // ssh-copy-id wants the NAS password typed once, so this opens in a
+  // terminal rather than running silently behind the panel.
+  function installSshKey(name) {
+    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation",
+                             root.cli, "ssh", "install-key", "--dest", String(name)])
+  }
+
   // --- the schedule -------------------------------------------------------
 
   property bool installBusy: false

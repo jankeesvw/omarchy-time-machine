@@ -64,16 +64,52 @@ FocusScope {
   function isList(v) { return v !== null && typeof v === "object" && v.length !== undefined }
   function clone(v) { return JSON.parse(JSON.stringify(v)) }
 
+  // A repository address is one string to restic and three different things
+  // to a person: a folder on a drive, a user and a machine and a folder on a
+  // NAS, or an address in the cloud. The draft keeps the parts, and the
+  // string is put back together from whichever kind is chosen.
   function draftDest(d, fresh) {
-    return {
+    var repo = str(d.repository)
+    var out = {
       origName: fresh ? "" : str(d.name),
       name: str(d.name),
       display_name: str(d.display_name),
-      repository: str(d.repository),
+      repository: repo,
       schedule: str(d.schedule),
       pre_command: str(d.pre_command),
-      on_failure_command: str(d.on_failure_command)
+      on_failure_command: str(d.on_failure_command),
+      kind: "drive", drivePath: "",
+      sshUser: "", sshHost: "", sshPort: "", sshPath: "",
+      cloudUrl: ""
     }
+    var m
+    if ((m = repo.match(/^sftp:\/\/([^@\/]+)@([^:\/]+)(?::(\d+))?(\/.*)?$/))) {
+      out.kind = "nas"
+      out.sshUser = m[1]; out.sshHost = m[2]; out.sshPort = m[3] || ""; out.sshPath = m[4] || ""
+    } else if ((m = repo.match(/^sftp:([^@:]+)@([^:]+):(.*)$/))) {
+      out.kind = "nas"
+      out.sshUser = m[1]; out.sshHost = m[2]; out.sshPath = m[3]
+    } else if (repo === "" || repo.charAt(0) === "/" || repo.charAt(0) === "~") {
+      out.kind = "drive"
+      out.drivePath = repo
+    } else {
+      out.kind = "cloud"
+      out.cloudUrl = repo
+    }
+    return out
+  }
+
+  function composeRepository(d) {
+    if (d.kind === "nas") {
+      var user = d.sshUser.trim(), host = d.sshHost.trim()
+      var port = d.sshPort.trim(), p = d.sshPath.trim()
+      if (user === "" && host === "" && p === "") return ""
+      if (port !== "" && port !== "22")
+        return "sftp://" + user + "@" + host + ":" + port + (p.charAt(0) === "/" ? p : "/" + p)
+      return "sftp:" + user + "@" + host + ":" + p
+    }
+    if (d.kind === "drive") return d.drivePath.trim()
+    return d.cloudUrl.trim()
   }
 
   // The starter destination, the same one `config create` writes, minus the
@@ -185,8 +221,10 @@ FocusScope {
         return "“" + destTitle(d) + "” needs a short name made of letters, digits, dots, dashes or underscores."
       if (seen[name]) return "Two destinations are called “" + name + "”."
       seen[name] = true
+      if (d.kind === "nas" && (d.sshUser.trim() === "" || d.sshHost.trim() === "" || d.sshPath.trim() === ""))
+        return "“" + destTitle(d) + "” needs the user, the address and a folder on the NAS."
       if (d.repository.trim() === "")
-        return "“" + destTitle(d) + "” needs a repository: where the backup goes."
+        return "“" + destTitle(d) + "” needs a place to go: a folder, a NAS or a cloud address."
     }
     return ""
   }
@@ -200,7 +238,9 @@ FocusScope {
 
   function edit(index, key, value) {
     if (index < 0 || index >= root.dests.length) return
-    root.dests[index][key] = value
+    var d = root.dests[index]
+    d[key] = value
+    if (key !== "repository") d.repository = composeRepository(d)
     root.revision++
     root.dirty = true
     root.problem = ""
@@ -291,6 +331,7 @@ FocusScope {
   function activate() {
     TimeMachineStore.loadConfig()
     TimeMachineStore.clearKeyMessages()
+    TimeMachineStore.clearProbe()
     TimeMachineStore.installError = ""
     TimeMachineStore.installNotice = ""
     TimeMachineStore.saveError = ""
@@ -554,6 +595,14 @@ FocusScope {
             readonly property bool keyBusy: TimeMachineStore.keyBusyFor === modelData.origName
             readonly property bool initBusy: TimeMachineStore.initBusyFor === modelData.origName
             readonly property bool editingKey: root.editingKeyFor === modelData.origName && modelData.origName !== ""
+            readonly property string kind: {
+              root.revision
+              var d = root.dests[card.index]
+              return d ? d.kind : card.modelData.kind
+            }
+            readonly property bool probeBusy: TimeMachineStore.probeBusyFor === modelData.origName
+            readonly property bool probed: TimeMachineStore.probeFor === modelData.origName
+                                           && modelData.origName !== ""
 
             width: parent.width
             height: cardColumn.implicitHeight + Style.space(20)
@@ -621,12 +670,98 @@ FocusScope {
                 onEdited: function(text) { root.edit(card.index, "display_name", text) }
               }
 
+              // --- where ----------------------------------------------------------------
+
+              Caption { text: "Where it goes" }
+
+              Flow {
+                width: parent.width
+                spacing: Style.space(6)
+
+                Action {
+                  text: "A drive"
+                  selected: card.kind === "drive"
+                  onClicked: root.edit(card.index, "kind", "drive")
+                }
+                Action {
+                  text: "A NAS over SSH"
+                  selected: card.kind === "nas"
+                  onClicked: root.edit(card.index, "kind", "nas")
+                }
+                Action {
+                  text: "Cloud or other"
+                  selected: card.kind === "cloud"
+                  onClicked: root.edit(card.index, "kind", "cloud")
+                }
+              }
+
               Field {
-                label: "Repository"
-                value: card.modelData.repository
+                visible: card.kind === "drive"
+                label: "Folder on the drive"
+                value: card.modelData.drivePath
                 placeholder: "/run/media/you/backup/restic"
-                hint: "A folder on a drive, sftp:you@nas:/volume1/backup, s3:s3.amazonaws.com/bucket, or anything else restic can write to."
-                onEdited: function(text) { root.edit(card.index, "repository", text) }
+                hint: "Plug the drive in and it appears under /run/media/<you>/. Any folder on it will do; it is created if it is not there."
+                onEdited: function(text) { root.edit(card.index, "drivePath", text) }
+              }
+
+              Column {
+                width: parent.width
+                spacing: Style.space(8)
+                visible: card.kind === "nas"
+
+                Row {
+                  id: nasRow
+                  width: parent.width
+                  spacing: Style.space(8)
+
+                  Field {
+                    width: (nasRow.width - nasRow.spacing) / 2
+                    label: "User on the NAS"
+                    value: card.modelData.sshUser
+                    placeholder: "joel"
+                    onEdited: function(text) { root.edit(card.index, "sshUser", text) }
+                  }
+
+                  Field {
+                    width: (nasRow.width - nasRow.spacing) / 2
+                    label: "Address of the NAS"
+                    value: card.modelData.sshHost
+                    placeholder: "192.168.68.2 or ds418.local"
+                    onEdited: function(text) { root.edit(card.index, "sshHost", text) }
+                  }
+                }
+
+                Field {
+                  label: "Folder on the NAS"
+                  value: card.modelData.sshPath
+                  placeholder: "/backups/restic"
+                  hint: "The folder as seen over SFTP, which on some servers differs from a shell. On a Synology a shared folder called backups is /backups. The last part is created for you."
+                  onEdited: function(text) { root.edit(card.index, "sshPath", text) }
+                }
+
+                // What any NAS needs before the first backup, then where each
+                // switch lives on a Synology, since that is the one most people
+                // have. Said here, on the form, rather than in a README read
+                // afterwards, because "repository not found" at 03:00 is how
+                // people otherwise find out.
+                Caption {
+                  text: "The NAS needs four things: SSH switched on, SFTP switched on (often a separate switch; restic speaks SFTP), a user allowed to log in over SSH, and a shared folder that user can write to.\n"
+                        + "On a Synology, in DSM:\n"
+                        + "1.  Control Panel \u203a Terminal & SNMP: Enable SSH service.\n"
+                        + "2.  Control Panel \u203a File Services \u203a FTP: Enable SFTP service.\n"
+                        + "3.  Control Panel \u203a User & Group: put the user in the administrators group (only they may log in over SSH), and under Advanced, Enable user home service.\n"
+                        + "4.  Control Panel \u203a Shared Folder: a folder such as \u201Cbackups\u201D, read/write for that user. Over SFTP it is /backups.\n"
+                        + "Then Save, press Install SSH Key so the nightly run can log in without a password, and Test Connection tells you what is still missing."
+                }
+              }
+
+              Field {
+                visible: card.kind === "cloud"
+                label: "Repository"
+                value: card.modelData.cloudUrl
+                placeholder: "s3:s3.amazonaws.com/bucket"
+                hint: "s3:, b2:, azure:, gs:, rest:, rclone: or anything else restic can write to. Credentials go in a file called " + (card.modelData.name.trim() !== "" ? card.modelData.name.trim() : "<name>") + ".env next to config.json, as KEY=VALUE lines."
+                onEdited: function(text) { root.edit(card.index, "cloudUrl", text) }
               }
 
               Field {
@@ -680,6 +815,49 @@ FocusScope {
                 width: parent.width
                 spacing: Style.space(6)
                 visible: card.ready
+
+                // --- setup: the connection -------------------------------------------------
+
+                Text {
+                  width: parent.width
+                  visible: card.kind !== "cloud"
+                  text: card.probeBusy ? "Checking\u2026"
+                        : !card.probed ? (card.kind === "nas" ? "Connection not tested yet" : "Drive not checked yet")
+                        : TimeMachineStore.probeReady ? (card.kind === "nas" ? "Connected" : "Drive is there")
+                        : (card.kind === "nas" ? "Not reachable yet" : "Drive not found")
+                  textFormat: Text.PlainText
+                  color: card.probed && !TimeMachineStore.probeReady ? root.urgent : root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                }
+
+                Flow {
+                  width: parent.width
+                  spacing: Style.space(6)
+                  visible: card.kind !== "cloud"
+
+                  Action {
+                    text: card.kind === "nas" ? "Test Connection" : "Check the Drive"
+                    enabled: !card.probeBusy
+                    onClicked: TimeMachineStore.probeDestination(card.modelData.origName)
+                  }
+
+                  Action {
+                    visible: card.kind === "nas"
+                    text: "Install SSH Key\u2026"
+                    onClicked: TimeMachineStore.installSshKey(card.modelData.origName)
+                  }
+                }
+
+                Caption {
+                  visible: card.probed && TimeMachineStore.probeMessage !== ""
+                  color: TimeMachineStore.probeReady ? root.dim : root.urgent
+                  text: TimeMachineStore.probeMessage
+                }
+
+                Item { width: 1; height: Style.space(2); visible: card.kind !== "cloud" }
+
+                // --- setup: the password ----------------------------------------------------
 
                 Text {
                   width: parent.width
