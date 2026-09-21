@@ -816,8 +816,9 @@ cmd_key() {
 destinations_table() {
   load_config
 
-  local status name label repo schedule last size snaps units
+  local status name label repo schedule last size snaps units epoch progress running updated age
   status="$(load_status)"
+  epoch="$(date +%s)"
 
   units="no"
   readable_file "$SYSTEMD_DIR/omarchy-time-machine@.service" && units="yes"
@@ -834,12 +835,34 @@ destinations_table() {
     schedule="$(dest '.schedule // empty')"
     [ -n "$schedule" ] || schedule="on request"
 
-    last="$(jq -r --arg n "$name" '
-      .destinations[$n].last_run // {} |
-      if .finished_at then
-        (.finished_at | sub("T"; " ") | .[0:16]) + (if .result == "failed" then "  FAILED" else "" end)
-      else "never" end' <<<"$status" 2>/dev/null)"
-    [ -n "$last" ] || last="never"
+    # A backup in flight leaves the previous run's result in status.json
+    # until it finishes, so a plain read here would show "FAILED" for the
+    # full duration of a run that is actually fixing that failure -- read as
+    # a stuck or lying widget rather than one that just hasn't reported yet.
+    # Same staleness check cmd_status uses: a progress file older than
+    # STALE_PROGRESS_SECONDS means its writer died, not that it's running.
+    progress="$(read_json_or "$STATE_DIR/progress-$name.json" 'null')"
+    running=false
+    if [ "$(jq -r 'if type == "object" then (.state // "") else "" end' <<<"$progress" 2>/dev/null)" = "running" ]; then
+      updated="$(jq -r '.updated_epoch // empty' <<<"$progress" 2>/dev/null)"
+      updated="$(number_or "$updated" 0)"
+      age=$((epoch - updated))
+      [ "$updated" -gt 0 ] && [ "$age" -lt "$STALE_PROGRESS_SECONDS" ] && running=true
+    fi
+    if systemctl --user --quiet is-active "omarchy-time-machine@$name.service" 2>/dev/null; then
+      running=true
+    fi
+
+    if [ "$running" = "true" ]; then
+      last="running..."
+    else
+      last="$(jq -r --arg n "$name" '
+        .destinations[$n].last_run // {} |
+        if .finished_at then
+          (.finished_at | sub("T"; " ") | .[0:16]) + (if .result == "failed" then "  FAILED" else "" end)
+        else "never" end' <<<"$status" 2>/dev/null)"
+      [ -n "$last" ] || last="never"
+    fi
 
     # Truncate rather than wrap: a table that reflows is harder to scan than
     # one that loses the middle of a long URL you already know.
