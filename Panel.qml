@@ -327,6 +327,19 @@ Panel {
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                 }
+
+                // The cause, on its own line so a long path can wrap instead of
+                // being cut off the end of "Failed today, 03:14".
+                Text {
+                  width: parent.width
+                  visible: text !== ""
+                  text: TimeMachineStore.destinationFailureReason(modelData)
+                  textFormat: Text.PlainText
+                  wrapMode: Text.WordWrap
+                  color: root.urgent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
               }
             }
           }

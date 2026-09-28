@@ -270,6 +270,15 @@ Singleton {
     return d.last_run ? d.last_run.result === "failed" : false
   }
 
+  // status.json already stores why the run failed. The panel used to say only
+  // "Failed" and when the last good copy was, so the cause stayed in the log.
+  function destinationFailureReason(d) {
+    if (!destinationFailed(d) || !d.last_run) return ""
+    var reason = d.last_run.error
+    if (reason === undefined || reason === null) return ""
+    return String(reason)
+  }
+
   function startBackup() {
     if (!active || running) return
     startProc.command = ["systemctl", "--user", "start", "--no-block",
@@ -608,7 +617,9 @@ Singleton {
     if (failed) {
       var when = menuDate(lastRun.finished_at)
       var since = lastSuccessAt !== "" ? ", last good one " + relativeTime(lastSuccessAt) : ""
-      return "Backup failed " + when.charAt(0).toLowerCase() + when.slice(1) + since
+      var reason = destinationFailureReason(active)
+      if (reason !== "") reason = ": " + reason
+      return "Backup failed " + when.charAt(0).toLowerCase() + when.slice(1) + since + reason
     }
     if (!everRan) return "Time Machine — no backup yet"
     return "Last backup: " + relativeTime(lastRun.finished_at)
