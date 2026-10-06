@@ -299,8 +299,21 @@ FocusScope {
       // Also fires after switching destination, where snapshotId was cleared:
       // landing on the newest backup of whatever you just picked is the only
       // sensible place to start.
-      if (root.snapshotId === "" && TimeMachineStore.snapshots.length > 0)
+      //
+      // And after a re-read, where `forget` may have pruned the one we were
+      // in. Keeping it would leave a bare ID that every restore fails against,
+      // so a selection that is gone counts the same as no selection.
+      if (root.snapshotId !== "" && root.currentSnapshot() !== null) return
+      if (TimeMachineStore.snapshots.length > 0) {
         root.openSnapshot(String(TimeMachineStore.snapshots[0].id))
+      } else if (root.snapshotId !== "") {
+        // Pruned to nothing: there is no newest to land on. Drop the dead ID
+        // and its listing, so no restore button is left pointing at it.
+        root.snapshotId = ""
+        root.snapshotRoots = []
+        root.selected = null
+        TimeMachineStore.clearListCache()
+      }
     }
   }
 
