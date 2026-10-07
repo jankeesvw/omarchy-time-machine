@@ -389,6 +389,17 @@ jq '.state = "running" | .updated_epoch = (now | floor)' "$PROGRESS" > "$PROGRES
 $CLI status --json | jq -e '.destinations[0].running == true' >/dev/null 2>&1
 check $? "a fresh progress file is"
 
+OUT="$($CLI destinations 2>/dev/null)"
+grep -q 'running\.\.\.' <<<"$OUT"
+check $? "the destinations table shows a fresh backup as running"
+
+jq '.kind = "restore"' "$PROGRESS" > "$PROGRESS.n" && mv "$PROGRESS.n" "$PROGRESS"
+$CLI status --json | jq -e '.destinations[0].running == false' >/dev/null 2>&1
+check $? "a fresh restore is not counted as a running backup"
+OUT="$($CLI destinations 2>/dev/null)"
+grep -q 'running\.\.\.' <<<"$OUT" && rc=1 || rc=0
+check $rc "the destinations table does not call a restore a running backup"
+
 # --- systemd ---------------------------------------------------------------
 
 group "systemd units"

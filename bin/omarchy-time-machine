@@ -810,15 +810,40 @@ cmd_key() {
   esac
 }
 
+# Is a backup running for this destination right now? Sets IN_FLIGHT_PROGRESS
+# to the progress document either way. Shared by the destinations table and
+# cmd_status so the CLI and the widget cannot disagree.
+#
+# A progress file older than STALE_PROGRESS_SECONDS means its writer died
+# without closing it; treating that as "running" would freeze the display on
+# a percentage that never moves again. Only kind "backup" counts: a restore
+# writes the same file, and is not a backup in flight.
+IN_FLIGHT_PROGRESS='null'
+backup_in_flight() {
+  local name="$1" updated age epoch
+  epoch="$(date +%s)"
+  IN_FLIGHT_PROGRESS="$(read_json_or "$STATE_DIR/progress-$name.json" 'null')"
+
+  if [ "$(jq -r 'if type == "object" and .state == "running" then (.kind // "backup") else "" end' <<<"$IN_FLIGHT_PROGRESS" 2>/dev/null)" = "backup" ]; then
+    updated="$(jq -r '.updated_epoch // empty' <<<"$IN_FLIGHT_PROGRESS" 2>/dev/null)"
+    updated="$(number_or "$updated" 0)"
+    age=$((epoch - updated))
+    if [ "$updated" -gt 0 ] && [ "$age" -lt "$STALE_PROGRESS_SECONDS" ]; then
+      return 0
+    fi
+  fi
+
+  systemctl --user --quiet is-active "omarchy-time-machine@$name.service" 2>/dev/null
+}
+
 # Everything worth knowing about every destination, without touching one of
 # them. Reads the configuration and the local state file only, so it answers
 # instantly whether or not the disk is plugged in or the NAS is awake.
 destinations_table() {
   load_config
 
-  local status name label repo schedule last size snaps units epoch progress running updated age
+  local status name label repo schedule last size snaps units running
   status="$(load_status)"
-  epoch="$(date +%s)"
 
   units="no"
   readable_file "$SYSTEMD_DIR/omarchy-time-machine@.service" && units="yes"
@@ -837,21 +862,9 @@ destinations_table() {
 
     # A backup in flight leaves the previous run's result in status.json
     # until it finishes, so a plain read here would show "FAILED" for the
-    # full duration of a run that is actually fixing that failure -- read as
-    # a stuck or lying widget rather than one that just hasn't reported yet.
-    # Same staleness check cmd_status uses: a progress file older than
-    # STALE_PROGRESS_SECONDS means its writer died, not that it's running.
-    progress="$(read_json_or "$STATE_DIR/progress-$name.json" 'null')"
+    # full duration of a run that is actually fixing that failure.
     running=false
-    if [ "$(jq -r 'if type == "object" then (.state // "") else "" end' <<<"$progress" 2>/dev/null)" = "running" ]; then
-      updated="$(jq -r '.updated_epoch // empty' <<<"$progress" 2>/dev/null)"
-      updated="$(number_or "$updated" 0)"
-      age=$((epoch - updated))
-      [ "$updated" -gt 0 ] && [ "$age" -lt "$STALE_PROGRESS_SECONDS" ] && running=true
-    fi
-    if systemctl --user --quiet is-active "omarchy-time-machine@$name.service" 2>/dev/null; then
-      running=true
-    fi
+    backup_in_flight "$name" && running=true
 
     if [ "$running" = "true" ]; then
       last="running..."
@@ -939,9 +952,8 @@ cmd_status() {
   fi
   load_config
 
-  local status active out name progress running epoch age updated installed repo
+  local status active out name progress running installed repo
   status="$(load_status)"
-  epoch="$(date +%s)"
   out='[]'
 
   # "Back Up Now" starts a systemd unit. Without `install` that unit does not
@@ -953,22 +965,9 @@ cmd_status() {
 
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    progress="$(read_json_or "$STATE_DIR/progress-$name.json" 'null')"
     running=false
-
-    # A progress file older than ten seconds means the writer died without
-    # closing it; treating that as "running" would freeze the widget on a
-    # percentage that never moves again.
-    if [ "$(jq -r 'if type == "object" then (.state // "") else "" end' <<<"$progress" 2>/dev/null)" = "running" ]; then
-      updated="$(jq -r '.updated_epoch // empty' <<<"$progress" 2>/dev/null)"
-      updated="$(number_or "$updated" 0)"
-      age=$((epoch - updated))
-      [ "$updated" -gt 0 ] && [ "$age" -lt "$STALE_PROGRESS_SECONDS" ] && running=true
-    fi
-
-    if systemctl --user --quiet is-active "omarchy-time-machine@$name.service" 2>/dev/null; then
-      running=true
-    fi
+    backup_in_flight "$name" && running=true
+    progress="$IN_FLIGHT_PROGRESS"
 
     repo="$(sanitize_repository "$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .repository // ""' <<<"$CONFIG_JSON")")"
 
