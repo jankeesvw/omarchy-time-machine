@@ -23,7 +23,7 @@ omarchy bar move jankeesvw.time-machine --section right
 
 ### The command line
 
-Most of this you can do from the panel. The rest is a command that lives inside the plugin rather than on your `PATH`, so typing `omarchy-time-machine` on its own gets you `command not found`:
+Everything below can be done from the panel, and that is the way to do it the first time. The command line does the same things for people who prefer it, or want to script it. It lives inside the plugin rather than on your `PATH`, so typing `omarchy-time-machine` on its own gets you `command not found`:
 
 ```bash
 ~/.config/omarchy/plugins/jankeesvw.time-machine/bin/omarchy-time-machine
@@ -39,7 +39,9 @@ Put that in your `~/.bashrc` to keep it. The plugin never adds anything to your 
 
 ## Point it somewhere
 
-Click the icon in your bar and choose **Create Configuration**. It writes a starter file and opens it in your editor, so you're never staring at a blank buffer wondering what goes in it. What you get looks like this:
+Click the icon in your bar and choose **Set Up Backups**. You get a form: where the backup goes, when it runs, what to keep. Fill in the repository, press **Save**, and the rest of the setup is three buttons on the same page: set a password, create the repository, turn on the schedule. The panel says which of them still needs doing.
+
+Prefer a file? The same page has **Edit config.json in Your Editor**, which writes a starter file and opens it, so you're never staring at a blank buffer wondering what goes in it. What you get looks like this:
 
 ```json
 {
@@ -67,13 +69,21 @@ An external drive is the easy case. It also does a NAS over SSH, or a bucket in 
 
 List more than one and the panel lists them all, each with its own schedule and its own history.
 
+### A NAS over SSH
+
+Pick **A NAS over SSH** on the settings page and fill in the user, the address and a folder. The panel then has two buttons that do the fiddly part: **Install SSH Key** puts this computer's key on the NAS (it asks the NAS password once, so the nightly run never has to), and **Test Connection** tells you which step is still missing rather than "repository not found" at three in the morning.
+
+Any NAS needs four things first: SSH switched on, SFTP switched on (often a separate switch, and restic speaks SFTP), a user who is allowed to log in over SSH, and a shared folder that user can write to. The form lists where each of those lives on a Synology: Control Panel › Terminal & SNMP for SSH, Control Panel › File Services › FTP for SFTP, the administrators group plus the user home service (Control Panel › User & Group) for the login, and Control Panel › Shared Folder for the folder. Mind that some servers show a different tree over SFTP than in a shell: on a Synology a shared folder called `backups` is `/backups`, not the `/volume1/backups` you would see in a shell. Test Connection lists what is there if you get it wrong.
+
+The nightly run logs in with `~/.ssh/id_ed25519`, so that key must not have a passphrase; there is nobody there to type it. If yours does, make one without and install that instead.
+
 Anywhere restic can write works: a local disk, SFTP, a REST server, S3, Minio, Wasabi, Backblaze B2, Azure Blob, Google Cloud Storage, Alibaba OSS, OpenStack Swift, or anything rclone can reach. A drive in your bag and a bucket in the cloud is a good pair: one is fast, the other survives your house.
 
 ## Pick a password
 
 Your backups are encrypted, and that's not optional. An external drive gets lost, a NAS gets stolen, a bucket in the cloud sits on somebody else's computer. Encrypted means that when your backup ends up somewhere you didn't intend, it's noise to whoever finds it.
 
-The price of that is a password. Pick one and it gets stored on this machine, so you'll never be asked for it again in normal use:
+The price of that is a password. Pick one and it gets stored on this machine, so you'll never be asked for it again in normal use. In the panel that is **Set Password**, then **Create Repository**, then **Turn On Scheduled Backups**, each under the destination it belongs to. From the terminal:
 
 ```bash
 omarchy-time-machine key set --dest backup-drive
@@ -81,7 +91,7 @@ omarchy-time-machine init --dest backup-drive
 omarchy-time-machine install
 ```
 
-Those three lines set the password, prepare the destination, and switch on the nightly schedule. That's the setup done. Go do something else.
+Either way, those three steps set the password, prepare the destination, and switch on the nightly schedule. That's the setup done. Go do something else.
 
 ## Now save that password somewhere else
 
@@ -89,13 +99,15 @@ Read this bit. It's the one thing that quietly makes backups worthless.
 
 Your password is stored in your home folder, and your home folder is what gets backed up. So the copy that ends up inside your backup is locked behind the very password you'd be trying to recover. If this laptop is stolen or dies, your backups are a pile of bytes that nobody can open. Not you, not me, not restic.
 
+Under each destination in the panel there is **Show** and **Copy**. From the terminal:
+
 ```bash
 omarchy-time-machine key show --dest backup-drive
 ```
 
 Put that in your password manager. Print it and put it in a drawer. Do it today, because the moment you need it is exactly the moment you can't get to it.
 
-If you use 1Password, there's a shortcut:
+If you use 1Password, there's a shortcut, as a button in the panel and as a command:
 
 ```bash
 omarchy-time-machine key save-1password --dest backup-drive
@@ -117,19 +129,19 @@ Everything you restore lands in `~/Restored/`, never on top of your current file
 
 ## Things you might want to change
 
-You only need `name` and `repository`. Everything else already has a sensible default.
+Every one of these is on the settings page in the panel; the table gives the name each has in the file. You only need `name` and `repository`. Everything else already has a sensible default.
 
 | Setting | Default | What it's for |
 |---|---|---|
 | `source` | your home folder | What gets backed up. A path, or a list of them: `["~", "/etc", "/srv/data"]`. If one is missing the backup stops rather than quietly taking half of it. |
-| `exclude_file` | `excludes.txt` next to your config | Things to skip. Caches, downloads, virtual machine images. Anything you can get back another way. |
+| `exclude_file` | `excludes.txt` next to your config | Where the list of things to skip is kept. The list itself is edited on the settings page; point this somewhere else to keep it in your dotfiles. |
 | `retention` | 7 daily, 4 weekly, 12 monthly, 3 yearly | How far back you can go. Older backups get thinned out rather than kept forever. |
 | `schedule` | none | When it runs. `"*-*-* 03:00:00"` is every night at three. Leave it out and this destination only runs when you press the button. |
 | `display_name` | the `name` | What the panel calls it. "The drive in my bag" reads better than `usb2`. |
 | `pre_command` | none | A command to wake the destination first. See below. |
 | `on_failure_command` | none | A command to run when a backup fails, if a red icon isn't enough. |
 
-Run `omarchy-time-machine install` again after changing a schedule.
+Saving from the panel keeps the timers in step with the schedules. After editing the file by hand, run `omarchy-time-machine install` again.
 
 Run it once after updating past 1.1.0 as well, even if nothing changed. Timers written before that carried a `Requires=` on the backup service, which meant that stopping a running backup switched the timer off with it: the run you cancelled was the last one that was ever scheduled, and nothing said so. The units are rewritten and re-enabled by that command; until you run it, an already-stopped timer stays stopped.
 
@@ -138,6 +150,30 @@ Times show on a 24-hour clock, to match the Omarchy clock next to it. If you'd r
 ```json
 { "id": "jankeesvw.time-machine", "timeFormat": "h:mm AP" }
 ```
+
+### Leaving things out
+
+Caches, downloads, virtual machine images, a second copy of something that already lives in the cloud: anything you could get back another way is worth keeping out of a backup, and out of the hours it takes to push it over the network.
+
+The settings page has this as a list. **Leave a folder out…** opens a folder browser inside the panel — arrows move, Enter opens a folder, Backspace goes up, and typing filters — and the folder you pick joins the list. **Back it up again** takes one off.
+
+The list lives in a plain text file, one pattern per line, and it is still yours to edit by hand:
+
+```
+/home/you/Dropbox
+/home/you/.cache
+node_modules
+```
+
+A pattern with a slash in it is matched against the whole path, so `/home/you/Dropbox` skips that folder and nothing else. A bare name matches anywhere, so `node_modules` skips every one of them, wherever it is. Lines starting with `#` are comments, and the panel keeps them: editing the list from the settings page will not strip the note you left next to an entry.
+
+From the terminal:
+
+```bash
+omarchy-time-machine excludes show           # what is being skipped, and where that list lives
+```
+
+One thing worth knowing: a pattern only applies to backups made after you add it. Snapshots that already hold a folder keep holding it until retention thins them out.
 
 ### If your destination isn't always there
 

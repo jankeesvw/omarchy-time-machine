@@ -28,10 +28,12 @@ Panel {
   readonly property color dimmer: Qt.darker(foreground, 2.2)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
-  // Which view the panel is showing. The restore browser reuses the same
-  // KeyboardPanel and simply swaps the content, because a second window would
-  // lose keyboard focus on Wayland the moment the first one closed.
+  // Which view the panel is showing. The restore browser and the settings
+  // view reuse the same KeyboardPanel and simply swap the content, because a
+  // second window would lose keyboard focus on Wayland the moment the first
+  // one closed.
   property bool browsing: false
+  property bool configuring: false
 
   readonly property color barIconColor: {
     if (TimeMachineStore.running) return accent
@@ -73,6 +75,7 @@ Panel {
   onOpenedChanged: {
     if (!opened) {
       root.browsing = false
+      root.configuring = false
       return
     }
     TimeMachineStore.refresh()
@@ -82,6 +85,11 @@ Panel {
   // listing has to take it, and give it back on the way out.
   onBrowsingChanged: {
     if (browsing) browser.takeFocus()
+    else keyCatcher.forceActiveFocus()
+  }
+
+  onConfiguringChanged: {
+    if (configuring) settings.takeFocus()
     else keyCatcher.forceActiveFocus()
   }
 
@@ -167,11 +175,13 @@ Panel {
     // fittedContentWidth inside the binding: that form evaluates once at open
     // and never re-runs, so the panel would keep the width of whichever view
     // happened to be showing when it opened.
-    readonly property int desiredWidth: Style.space(root.browsing ? 460 : 280)
+    readonly property int desiredWidth: Style.space(root.browsing ? 460 : root.configuring ? 400 : 280)
     contentWidth: Math.min(desiredWidth,
                            panel.availableCardWidth > 0 ? panel.availableCardWidth : desiredWidth)
     contentHeight: panel.fittedContentHeight(
-                     root.browsing ? browser.implicitHeight : mainColumn.implicitHeight,
+                     root.browsing ? browser.implicitHeight
+                     : root.configuring ? settings.implicitHeight
+                     : mainColumn.implicitHeight,
                      Style.space(560))
 
     PanelKeyCatcher {
@@ -183,8 +193,9 @@ Panel {
       // delete, all checked before the plain-text fallback. Typing to filter a
       // listing is impossible under it; any word containing one of those
       // letters would steer the panel instead. While browsing the listing
-      // handles its own keys.
-      blocked: root.browsing
+      // handles its own keys, and the settings view is a form: every key
+      // belongs to whichever field has focus.
+      blocked: root.browsing || root.configuring
 
       // ConfirmDialog handles the mouse itself but nothing else: without this
       // an open dialog would swallow Escape and Enter, and the only way out
@@ -214,7 +225,7 @@ Panel {
       Flickable {
         id: mainScroll
         anchors.fill: parent
-        visible: !root.browsing
+        visible: !root.browsing && !root.configuring
         contentWidth: width
         contentHeight: mainColumn.implicitHeight
         clip: true
@@ -261,7 +272,7 @@ Panel {
             bottomPadding: visible ? Style.space(8) : 0
             text: {
               if (TimeMachineStore.configInvalid) return TimeMachineStore.configError
-              if (!TimeMachineStore.configured) return "Create one below and it opens in your editor"
+              if (!TimeMachineStore.configured) return "Set one up below; it takes a minute"
               return ""
             }
             textFormat: Text.PlainText
@@ -390,19 +401,17 @@ Panel {
             }
           }
 
-          // Rather than an action that silently does nothing, say what is
-          // missing. This is the state every fresh install starts in.
-          Text {
+          // Rather than an action that silently does nothing, point at what is
+          // missing. This is the state every fresh install starts in: a file,
+          // but no password or no timers yet, and the settings view has a
+          // button for each.
+          MenuRow {
             width: parent.width
-            visible: TimeMachineStore.configured && !TimeMachineStore.unitsInstalled
-            topPadding: visible ? Style.space(6) : 0
-            bottomPadding: visible ? Style.space(6) : 0
-            text: "Run \u2018omarchy-time-machine install\u2019 once to enable backups"
-            textFormat: Text.PlainText
-            wrapMode: Text.WordWrap
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
+            visible: TimeMachineStore.setupIncomplete
+            label: "Finish Setting Up\u2026"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: root.configuring = true
           }
 
           PanelSeparator {
@@ -425,17 +434,21 @@ Panel {
 
           PanelSeparator { width: parent.width; foreground: root.foreground }
 
+          // A file that does not parse cannot be shown as a form, so that one
+          // case still goes to the editor; everything else is done in here.
           MenuRow {
             width: parent.width
-            label: (TimeMachineStore.configured || TimeMachineStore.configInvalid)
-                   ? "Open Configuration\u2026" : "Create Configuration\u2026"
+            label: TimeMachineStore.configInvalid ? "Open Configuration\u2026"
+                   : TimeMachineStore.configured ? "Settings\u2026" : "Set Up Backups\u2026"
             foreground: root.foreground
             fontFamily: root.fontFamily
             onClicked: {
-              if (TimeMachineStore.configured || TimeMachineStore.configInvalid)
+              if (TimeMachineStore.configInvalid) {
                 TimeMachineStore.openConfig()
-              else TimeMachineStore.createConfig()
-              root.close()
+                root.close()
+              } else {
+                root.configuring = true
+              }
             }
           }
         }
@@ -453,6 +466,25 @@ Panel {
         urgent: root.urgent
         fontFamily: root.fontFamily
         onBack: root.browsing = false
+      }
+
+      // --- settings view -----------------------------------------------------
+
+      SettingsView {
+        id: settings
+        anchors.fill: parent
+        visible: root.configuring
+        foreground: root.foreground
+        dim: root.dim
+        accent: root.accent
+        urgent: root.urgent
+        fontFamily: root.fontFamily
+        onBack: root.configuring = false
+        onEditFile: {
+          if (TimeMachineStore.configExists) TimeMachineStore.openConfig()
+          else TimeMachineStore.createConfig()
+          root.close()
+        }
       }
     }
 

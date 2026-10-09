@@ -511,6 +511,503 @@ Singleton {
     }
   }
 
+  // --- settings -----------------------------------------------------------
+  //
+  // Everything the README's setup used to ask of the terminal -- write the
+  // configuration, set the password, create the repository, switch on the
+  // schedule -- driven from the panel's settings view. Each step is one CLI
+  // call answering in JSON; the store keeps the outcome so the view can say
+  // what happened, and which destination it happened to.
+
+  // One shape for every answer: the CLI's {ok, error} envelope, with a
+  // fallback for the case where it did not manage to answer at all.
+  function answer(text, fallback) {
+    var payload
+    try {
+      payload = JSON.parse(text)
+    } catch (e) {
+      return { ok: false, error: fallback, payload: null }
+    }
+    if (payload.ok !== true)
+      return { ok: false, error: payload.error ? String(payload.error) : fallback, payload: payload }
+    return { ok: true, error: "", payload: payload }
+  }
+
+  // The configuration as the file has it. The whole object, not the parts
+  // this file understands: the view edits what it knows and hands the rest
+  // back untouched, so a key from a newer version survives a round trip.
+  property var config: null
+  property bool configExists: false
+  property bool configLoaded: false
+  property bool configBusy: false
+  property string configLoadError: ""
+
+  function loadConfig() {
+    if (configBusy) return
+    configBusy = true
+    configLoadError = ""
+    configShowProc.running = true
+  }
+
+  Process {
+    id: configShowProc
+    command: [root.cli, "config", "show", "--json"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        root.configBusy = false
+        var a = root.answer(text, "could not read the configuration")
+        if (!a.ok) {
+          root.configLoadError = a.error
+          return
+        }
+        root.configExists = a.payload.exists === true
+        root.config = a.payload.config || null
+        root.configLoaded = true
+      }
+    }
+  }
+
+  property bool saveBusy: false
+  property string saveError: ""
+  signal configSaved()
+
+  function saveConfig(obj) {
+    if (saveBusy) return
+    saveBusy = true
+    saveError = ""
+    configWriteProc.payload = JSON.stringify(obj, null, 2) + "\n"
+    configWriteProc.stdinEnabled = true
+    configWriteProc.running = true
+  }
+
+  // The file travels on stdin, never as an argument: it can carry a REST
+  // server URL with credentials in it, and argv is readable by every account
+  // on the machine. Closing stdin is what tells the CLI the document is over.
+  Process {
+    id: configWriteProc
+    property string payload: ""
+    command: [root.cli, "config", "write", "--json"]
+    onStarted: {
+      write(payload)
+      payload = ""
+      stdinEnabled = false
+    }
+    stdout: StdioCollector {
+      onStreamFinished: {
+        root.saveBusy = false
+        var a = root.answer(text, "could not save the configuration")
+        if (!a.ok) {
+          root.saveError = a.error
+          return
+        }
+        root.loadConfig()
+        root.refresh()
+        // A schedule is only a schedule once the timer says so. The README
+        // asks for `install` after every change to one; saving from the panel
+        // does it unasked, but only where the units already exist -- turning
+        // scheduled backups on is a step of its own, taken on purpose.
+        if (root.unitsInstalled) root.installUnits()
+        root.configSaved()
+      }
+    }
+  }
+
+  // --- the exclude list ---------------------------------------------------
+
+  // Every line of the exclude file, verbatim, comments and blanks included.
+  // The settings view edits the lines it recognises as patterns and hands the
+  // rest back exactly as they came, so a note somebody wrote next to an entry
+  // is not lost the first time the list is edited from the panel.
+  property var excludeLines: []
+  property string excludePath: ""
+  property bool excludeIsDefault: true
+  property bool excludeExists: false
+  property bool excludesLoaded: false
+  property bool excludesBusy: false
+  property string excludesError: ""
+  signal excludesSaved()
+
+  function loadExcludes() {
+    if (excludesBusy) return
+    excludesBusy = true
+    excludesError = ""
+    excludesShowProc.running = true
+  }
+
+  Process {
+    id: excludesShowProc
+    command: [root.cli, "excludes", "show", "--json"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        root.excludesBusy = false
+        var a = root.answer(text, "could not read the list of things to skip")
+        if (!a.ok) {
+          root.excludesError = a.error
+          return
+        }
+        root.excludeLines = a.payload.lines || []
+        root.excludePath = a.payload.path ? String(a.payload.path) : ""
+        root.excludeIsDefault = a.payload.is_default !== false
+        root.excludeExists = a.payload.exists === true
+        root.excludesLoaded = true
+      }
+    }
+  }
+
+  property bool excludesSaveBusy: false
+
+  // The whole file goes out on stdin, the same way the configuration does:
+  // one document in, one document out, never a patch. Which file that is, is
+  // the CLI's business -- it resolves exclude_file against the configuration,
+  // and a panel that worked it out for itself would be a second answer to the
+  // same question, free to disagree.
+  function saveExcludes(lines) {
+    if (excludesSaveBusy) return
+    excludesSaveBusy = true
+    excludesError = ""
+    excludesWriteProc.payload = lines.length === 0 ? "" : lines.join("\n") + "\n"
+    excludesWriteProc.stdinEnabled = true
+    excludesWriteProc.running = true
+  }
+
+  Process {
+    id: excludesWriteProc
+    property string payload: ""
+    command: [root.cli, "excludes", "write", "--json"]
+    onStarted: {
+      write(payload)
+      payload = ""
+      stdinEnabled = false
+    }
+    stdout: StdioCollector {
+      onStreamFinished: {
+        root.excludesSaveBusy = false
+        var a = root.answer(text, "could not save the list of things to skip")
+        if (!a.ok) {
+          root.excludesError = a.error
+          return
+        }
+        root.loadExcludes()
+        root.excludesSaved()
+      }
+    }
+  }
+
+  // --- the password -------------------------------------------------------
+
+  property string keyBusyFor: ""
+  property string keyError: ""
+  property string keyErrorFor: ""
+  property string keyNotice: ""
+  property string keyNoticeFor: ""
+  // The key, revealed for copying somewhere safe. Cleared the moment the
+  // view goes away, so it is never sitting on screen unasked.
+  property string keyShown: ""
+  property string keyShownFor: ""
+
+  function clearKeyMessages() {
+    keyError = ""; keyErrorFor = ""
+    keyNotice = ""; keyNoticeFor = ""
+  }
+
+  function hideKey() { keyShown = ""; keyShownFor = "" }
+
+  function setKey(name, password) {
+    if (keyBusyFor !== "") return
+    clearKeyMessages()
+    hideKey()
+    keyBusyFor = String(name)
+    keySetProc.secret = String(password)
+    keySetProc.command = [root.cli, "key", "set", "--dest", String(name), "--json"]
+    keySetProc.stdinEnabled = true
+    keySetProc.running = true
+  }
+
+  Process {
+    id: keySetProc
+    property string secret: ""
+    onStarted: {
+      write(secret + "\n")
+      secret = ""
+      stdinEnabled = false
+    }
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var name = root.keyBusyFor
+        root.keyBusyFor = ""
+        var a = root.answer(text, "could not save the password")
+        if (!a.ok) {
+          root.keyErrorFor = name
+          root.keyError = a.error
+          return
+        }
+        root.keyNoticeFor = name
+        root.keyNotice = "Password saved. Now keep a copy somewhere that is not this machine."
+        // `key set` records password_file in config.json, and status carries
+        // key_present: both need re-reading.
+        root.refresh()
+        root.loadConfig()
+      }
+    }
+  }
+
+  // `show` puts it on screen; `copy` hands it to the clipboard without
+  // showing it, for the person sitting in a shared office.
+  function showKey(name) { fetchKey(name, "show") }
+  function copyKey(name) { fetchKey(name, "copy") }
+
+  function fetchKey(name, purpose) {
+    if (keyBusyFor !== "") return
+    clearKeyMessages()
+    keyBusyFor = String(name)
+    keyShowProc.purpose = purpose
+    keyShowProc.command = [root.cli, "key", "show", "--dest", String(name), "--json"]
+    keyShowProc.running = true
+  }
+
+  Process {
+    id: keyShowProc
+    property string purpose: "show"
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var name = root.keyBusyFor
+        root.keyBusyFor = ""
+        var a = root.answer(text, "could not read the password")
+        if (!a.ok) {
+          root.keyErrorFor = name
+          root.keyError = a.error
+          return
+        }
+        var key = String(a.payload.key || "")
+        if (keyShowProc.purpose === "copy") {
+          copyProc.payload = key
+          copyProc.forName = name
+          copyProc.stdinEnabled = true
+          copyProc.running = true
+          return
+        }
+        root.keyShownFor = name
+        root.keyShown = key
+      }
+    }
+  }
+
+  // wl-copy reads stdin to the end, so stdin is closed right after the write.
+  Process {
+    id: copyProc
+    property string payload: ""
+    property string forName: ""
+    command: ["wl-copy", "--type", "text/plain"]
+    onStarted: {
+      write(payload)
+      payload = ""
+      stdinEnabled = false
+    }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        root.keyError = "could not copy to the clipboard"
+        root.keyErrorFor = copyProc.forName
+        return
+      }
+      root.keyNoticeFor = copyProc.forName
+      root.keyNotice = "Copied. Paste it into your password manager now."
+    }
+  }
+
+  function saveKeyTo1Password(name) {
+    if (keyBusyFor !== "") return
+    clearKeyMessages()
+    keyBusyFor = String(name)
+    onePasswordProc.command = [root.cli, "key", "save-1password", "--dest", String(name), "--json"]
+    onePasswordProc.running = true
+  }
+
+  Process {
+    id: onePasswordProc
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var name = root.keyBusyFor
+        root.keyBusyFor = ""
+        var a = root.answer(text, "1Password did not take the key")
+        if (!a.ok) {
+          root.keyErrorFor = name
+          root.keyError = a.error
+          return
+        }
+        root.keyNoticeFor = name
+        root.keyNotice = "Saved to 1Password as \u201C" + String(a.payload.title || "") + "\u201D."
+      }
+    }
+  }
+
+  // --- the repository -----------------------------------------------------
+
+  property string initBusyFor: ""
+  property string initError: ""
+  property string initErrorFor: ""
+  property string initNotice: ""
+  property string initNoticeFor: ""
+  // Destinations whose repository this session has seen created. status.json
+  // only learns about a repository from its first successful backup, and a
+  // button that still says "create" after you pressed it reads as broken.
+  property var initialised: ({})
+
+  function initRepository(name) {
+    if (initBusyFor !== "") return
+    initError = ""; initErrorFor = ""
+    initNotice = ""; initNoticeFor = ""
+    initBusyFor = String(name)
+    initProc.command = [root.cli, "init", "--dest", String(name), "--json"]
+    initProc.running = true
+  }
+
+  Process {
+    id: initProc
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var name = root.initBusyFor
+        root.initBusyFor = ""
+        var a = root.answer(text, "could not create the repository")
+        if (!a.ok) {
+          root.initErrorFor = name
+          root.initError = a.error
+          return
+        }
+        // A fresh object, not the same one mutated: a var property assigned
+        // the object it already holds does not announce a change.
+        var done = {}
+        for (var k in root.initialised) done[k] = root.initialised[k]
+        done[name] = true
+        root.initialised = done
+        root.initNoticeFor = name
+        root.initNotice = a.payload.already === true
+                          ? "The repository was already there."
+                          : "Repository created."
+      }
+    }
+  }
+
+  // Whether a destination can take a backup right now, as far as local files
+  // can tell: a successful run, a snapshot count, or a repository created in
+  // this session.
+  function destinationReady(d) {
+    if (!d) return false
+    if (initialised[String(d.name)] === true) return true
+    if (d.last_success_at) return true
+    return Number(d.snapshot_count) > 0
+  }
+
+  function destinationKeyPresent(d) {
+    return d ? d.key_present === true : false
+  }
+
+  // The status entry for a destination name, or null. The settings view keys
+  // everything by name because its own list is a draft that may not match
+  // status yet.
+  function statusFor(name) {
+    for (var i = 0; i < destinations.length; i++)
+      if (String(destinations[i].name) === String(name)) return destinations[i]
+    return null
+  }
+
+  // Something in the setup still needs doing: the timers are not installed,
+  // or a destination has no password yet. Either one means the first backup
+  // fails at 03:00 with nobody watching.
+  readonly property bool setupIncomplete: {
+    if (!configured) return false
+    if (!unitsInstalled) return true
+    for (var i = 0; i < destinations.length; i++)
+      if (!destinationKeyPresent(destinations[i])) return true
+    return false
+  }
+
+  // --- the connection -----------------------------------------------------
+  //
+  // Before a password or a repository: can the destination be reached at all?
+  // `probe` walks the steps -- listening, logged in, folder there -- and stops
+  // at the first that fails, in words that say what to do about it.
+
+  property string probeBusyFor: ""
+  property string probeFor: ""
+  property string probeStage: ""
+  property string probeMessage: ""
+  property bool probeReady: false
+
+  function clearProbe() {
+    probeFor = ""; probeStage = ""; probeMessage = ""; probeReady = false
+  }
+
+  function probeDestination(name) {
+    if (probeBusyFor !== "") return
+    clearProbe()
+    probeBusyFor = String(name)
+    probeProc.command = [root.cli, "probe", "--dest", String(name), "--json"]
+    probeProc.running = true
+  }
+
+  Process {
+    id: probeProc
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var name = root.probeBusyFor
+        root.probeBusyFor = ""
+        var a = root.answer(text, "could not check the destination")
+        root.probeFor = name
+        if (!a.ok) {
+          root.probeStage = "error"
+          root.probeReady = false
+          root.probeMessage = a.error
+          return
+        }
+        root.probeStage = String(a.payload.stage || "")
+        root.probeReady = a.payload.ready === true
+        root.probeMessage = String(a.payload.message || "")
+      }
+    }
+  }
+
+  // ssh-copy-id wants the NAS password typed once, so this opens in a
+  // terminal rather than running silently behind the panel.
+  function installSshKey(name) {
+    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation",
+                             root.cli, "ssh", "install-key", "--dest", String(name)])
+  }
+
+  // --- the schedule -------------------------------------------------------
+
+  property bool installBusy: false
+  property string installError: ""
+  property string installNotice: ""
+
+  function installUnits() {
+    if (installBusy) return
+    installBusy = true
+    installError = ""
+    installNotice = ""
+    installProc.running = true
+  }
+
+  Process {
+    id: installProc
+    command: [root.cli, "install", "--json"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        root.installBusy = false
+        var a = root.answer(text, "could not set up the schedule")
+        if (!a.ok) {
+          root.installError = a.error
+          root.refresh()
+          return
+        }
+        var names = a.payload.scheduled || []
+        root.installNotice = names.length === 0
+                             ? "Nothing has a schedule, so backups run only when you press the button."
+                             : "Scheduled backups are on."
+        root.refresh()
+      }
+    }
+  }
+
   // --- formatting ---------------------------------------------------------
 
   function plain(value) {

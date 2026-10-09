@@ -1,4 +1,6 @@
 singleton TimeMachineStore 1.0 TimeMachineStore.qml
 RestoreBrowser 1.0 RestoreBrowser.qml
 RestoreRow 1.0 RestoreRow.qml
+FolderPicker 1.0 FolderPicker.qml
 MenuRow 1.0 MenuRow.qml
+SettingsView 1.0 SettingsView.qml

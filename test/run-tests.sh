@@ -641,6 +641,200 @@ check $? "running it again leaves an existing configuration alone"
 
 cp "$CONFIG_BACKUP" "$CONFIG"
 
+# --- the settings view -----------------------------------------------------
+#
+# The panel edits config.json through `config show` and `config write`, and
+# runs the setup steps through the --json forms of key, init and install.
+# Everything it sends back must round-trip, and every answer must be one line
+# of JSON on stdout -- prose belongs on stderr, where QML never looks.
+
+group "Editing the configuration from the panel"
+
+$CLI config show --json | jq -e '.ok == true and .exists == true and .config.destinations[0].name == "test"' >/dev/null 2>&1
+check $? "config show --json hands the panel the whole file"
+
+CONFIG_BACKUP="$WORK/config.before-panel"
+cp "$CONFIG" "$CONFIG_BACKUP"
+
+# A key this script knows nothing about must come back exactly as it went in:
+# the form edits what it understands and passes the rest through.
+jq '.destinations[0].display_name = "Drive in my bag" | .somebody_elses_key = {"kept": true}' "$CONFIG_BACKUP" \
+  | $CLI config write --json | jq -e '.ok == true' >/dev/null 2>&1
+check $? "config write --json accepts a good configuration"
+
+jq -e '.somebody_elses_key.kept == true and .destinations[0].display_name == "Drive in my bag"' "$CONFIG" >/dev/null 2>&1
+check $? "and writes it back whole, unknown keys included"
+
+[ "$(stat -c %a "$CONFIG")" = "600" ]
+check $? "and the file is not world readable"
+
+OUT="$(printf '{"destinations":[{"repository":"/x"}]}' | $CLI config write --json)"
+jq -e '.ok == false and (.error | test("needs a name"))' >/dev/null 2>&1 <<<"$OUT"
+check $? "a destination without a name is refused with the same message status gives"
+
+jq -e '.somebody_elses_key.kept == true' "$CONFIG" >/dev/null 2>&1
+check $? "and the file on disk is untouched by the refusal"
+
+if command -v systemd-analyze >/dev/null 2>&1; then
+  OUT="$(jq '.destinations[0].schedule = "every tuesday-ish"' "$CONFIG_BACKUP" | $CLI config write --json)"
+  jq -e '.ok == false and (.error | test("schedule of test"))' >/dev/null 2>&1 <<<"$OUT"
+  check $? "a schedule systemd would not accept is refused before the timer finds out"
+fi
+
+OUT="$(printf 'not json at all' | $CLI config write --json)"
+jq -e '.ok == false' >/dev/null 2>&1 <<<"$OUT"
+check $? "garbage is refused as JSON, not as a crash"
+
+cp "$CONFIG_BACKUP" "$CONFIG"
+
+# --- the exclude list, from the panel -----------------------------------------
+
+group "Editing the exclude list from the panel"
+
+EXCLUDES="$XDG_CONFIG_HOME/omarchy-time-machine/excludes.txt"
+rm -f "$EXCLUDES"
+
+# The suite's configuration points exclude_file at a file of its own. These
+# checks are about the default -- excludes.txt next to config.json -- so the
+# setting comes out for the duration and goes back at the end.
+cp "$CONFIG" "$WORK/config.before-excludes"
+jq 'del(.exclude_file)' "$WORK/config.before-excludes" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
+
+$CLI excludes show --json \
+  | jq -e '.ok == true and .exists == false and .is_default == true and (.path | endswith("/excludes.txt")) and (.lines | length) == 0' >/dev/null 2>&1
+check $? "excludes show --json reports where the list would go before there is one"
+
+# The panel edits the pattern lines and hands back everything else untouched,
+# so a comment explaining why something is skipped has to survive the trip.
+printf '# the VM images, I can rebuild those\n\n/home/someone/VMs\n/home/someone/Downloads\n' \
+  | $CLI excludes write --json | jq -e '.ok == true' >/dev/null 2>&1
+check $? "excludes write --json accepts a list"
+
+$CLI excludes show --json \
+  | jq -e '.lines == ["# the VM images, I can rebuild those", "", "/home/someone/VMs", "/home/someone/Downloads"]' >/dev/null 2>&1
+check $? "and comments and blank lines come back exactly as they went in"
+
+[ "$(stat -c %a "$EXCLUDES")" = "600" ]
+check $? "and the file is not world readable"
+
+[ "$(tail -c 2 "$EXCLUDES" | od -An -c | tr -d ' ')" = "s\\n" ]
+check $? "and it ends in exactly one newline, because restic reads it line by line"
+
+printf '' | $CLI excludes write --json | jq -e '.ok == true' >/dev/null 2>&1
+check $? "an empty list is a legitimate answer, not an error"
+
+[ ! -s "$EXCLUDES" ]
+check $? "and it empties the file rather than leaving the old patterns behind"
+
+OUT="$(head -c 300000 /dev/zero | tr '\0' 'x' | $CLI excludes write --json)"
+jq -e '.ok == false and (.error | test("too long"))' >/dev/null 2>&1 <<<"$OUT"
+check $? "something far too large to be a list of patterns is refused"
+
+# An exclude_file the user pointed somewhere else is the one the panel edits:
+# the panel must never resolve this path for itself.
+ELSEWHERE="$WORK/dotfiles-excludes.txt"
+jq --arg p "$ELSEWHERE" '.exclude_file = $p' "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
+$CLI excludes show --json | jq -e --arg p "$ELSEWHERE" '.path == $p and .is_default == false' >/dev/null 2>&1
+check $? "a configured exclude_file is the one show reports, and it says it is not the default"
+
+printf '/home/someone/elsewhere\n' | $CLI excludes write --json >/dev/null 2>&1
+[ "$(cat "$ELSEWHERE" 2>/dev/null)" = "/home/someone/elsewhere" ]
+check $? "and the one write writes to"
+
+cp "$WORK/config.before-excludes" "$CONFIG"
+rm -f "$EXCLUDES" "$ELSEWHERE"
+
+# --- the password, from the panel --------------------------------------------
+
+group "The password, from the panel"
+
+$CLI status --json | jq -e '.destinations[0].key_present == true' >/dev/null 2>&1
+check $? "status reports that a key is present, without reading it"
+
+OUT="$(printf 'test-password\n' | $CLI key set --dest test --json)"
+[ "$(wc -l <<<"$OUT")" = "1" ] && jq -e '.ok == true and (.path | endswith("test.key"))' >/dev/null 2>&1 <<<"$OUT"
+check $? "key set --json answers with one line of JSON and nothing else"
+
+[ "$($CLI key show --dest test --json | jq -r '.key')" = "test-password" ]
+check $? "key show --json returns the key for the panel to show or copy"
+
+OUT="$($CLI key show --dest nope --json)"
+jq -e '.ok == false' >/dev/null 2>&1 <<<"$OUT"
+check $? "and an unknown destination is a JSON error, not a shell one"
+
+KEYLESS="$WORK/keyless"
+mkdir -p "$KEYLESS/config/omarchy-time-machine"
+# Without the password_file that `key set` recorded above, or the fresh name
+# would still resolve to the existing key.
+jq '.destinations[0].name = "fresh" | del(.destinations[0].password_file)' "$CONFIG" \
+  > "$KEYLESS/config/omarchy-time-machine/config.json"
+XDG_CONFIG_HOME="$KEYLESS/config" XDG_STATE_HOME="$KEYLESS/state" $CLI status --json \
+  | jq -e '.destinations[0].key_present == false' >/dev/null 2>&1
+check $? "a destination without a key file says so"
+
+# --- the repository and the schedule, from the panel ------------------------
+
+group_restic "The repository, from the panel"
+
+OUT="$($CLI init --dest test --json 2>/dev/null)"
+[ "$(wc -l <<<"$OUT")" = "1" ] && jq -e '.ok == true and .already == true' >/dev/null 2>&1 <<<"$OUT"
+check $? "init --json on an existing repository is a success that says so"
+
+group "The schedule, from the panel"
+
+# install cannot enable anything under a redirected XDG_CONFIG_HOME, and says
+# so. What matters here is the shape of the answer: JSON alone on stdout.
+OUT="$($CLI install --json 2>/dev/null)"
+[ "$(wc -l <<<"$OUT")" = "1" ] && jq -e 'has("ok")' >/dev/null 2>&1 <<<"$OUT"
+check $? "install --json keeps its commentary off stdout"
+
+# Captured first, for the same pipefail reason as everywhere else in this file:
+# grep -q hangs up as soon as it has its match, and the CLI is still talking.
+ERR="$($CLI install --json 2>&1 >/dev/null)"
+grep -q 'Writing units' <<<"$ERR"
+check $? "and puts it on stderr instead"
+
+# --- checking a destination ---------------------------------------------------
+#
+# The panel's Test Connection button. It must say which step failed, in words
+# that name the fix, and it must never need the repository password to do so.
+
+group "Checking a destination"
+
+PROBE="$WORK/probe"
+mkdir -p "$PROBE/config/omarchy-time-machine" "$PROBE/here"
+probe_with() {  # $1 = repository
+  jq --arg r "$1" '.destinations[0].repository = $r | del(.destinations[0].password_file)' "$CONFIG" \
+    > "$PROBE/config/omarchy-time-machine/config.json"
+  XDG_CONFIG_HOME="$PROBE/config" XDG_STATE_HOME="$PROBE/state" $CLI probe --dest test --json
+}
+
+probe_with "$PROBE/here" | jq -e '.ok == true and .ready == true and .stage == "ready"' >/dev/null 2>&1
+check $? "a local folder that exists is ready"
+
+probe_with "$PROBE/here/restic" | jq -e '.ready == true' >/dev/null 2>&1
+check $? "so is a folder whose parent exists, since init creates it"
+
+probe_with "$PROBE/nowhere/at/all" | jq -e '.ready == false and .stage == "mount" and (.message | test("plugged in"))' >/dev/null 2>&1
+check $? "a missing folder asks whether the drive is mounted"
+
+probe_with "sftp://nobody@127.0.0.1:1/volume1/backup" | jq -e '.ready == false and .stage == "ssh_off" and (.message | test("Enable SSH"))' >/dev/null 2>&1
+check $? "a NAS with nothing on the SSH port is told where the switch is"
+
+probe_with "sftp:nobody@" | jq -e '.ok == false' >/dev/null 2>&1
+check $? "a malformed sftp address is refused as such"
+
+probe_with "s3:s3.amazonaws.com/bucket" | jq -e '.ready == false and .stage == "untested"' >/dev/null 2>&1
+check $? "a cloud destination says it cannot be checked from here"
+
+ls "$PROBE/config/omarchy-time-machine/"*.key >/dev/null 2>&1
+[ $? -ne 0 ]
+check $? "and none of that needed a key file"
+
+OUT="$(XDG_CONFIG_HOME="$PROBE/config" $CLI ssh install-key --dest test 2>&1)"
+grep -q "not an sftp" <<<"$OUT"
+check $? "install-key refuses a destination that is not a NAS"
+
 # --- demo mode -------------------------------------------------------------
 #
 # Screenshots must never show a real home directory, and a click while posing
