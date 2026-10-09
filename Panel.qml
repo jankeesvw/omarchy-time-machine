@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 
 // Time Machine: scheduled restic backups, with the state of the last one a
@@ -20,9 +21,9 @@ Panel {
   moduleName: "jankeesvw.time-machine"
   ipcTarget: "jankeesvw.time-machine"
 
-  readonly property color foreground: bar ? bar.foreground : Color.foreground
-  readonly property color urgent: bar ? bar.urgent : Color.urgent
-  readonly property color accent: Color.accent
+  readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
+  readonly property color urgent: bar ? bar.urgent : Commons.Color.urgent
+  readonly property color accent: Commons.Color.accent
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property color dimmer: Qt.darker(foreground, 2.2)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
@@ -138,7 +139,7 @@ Panel {
             anchors.centerIn: parent
             text: "!"
             textFormat: Text.PlainText
-            color: Color.background
+            color: Commons.Color.background
             font.family: root.fontFamily
             font.pixelSize: Math.round(root.badgeSize * 0.8)
             font.bold: true

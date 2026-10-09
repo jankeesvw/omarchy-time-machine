@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Commons
 
 // One row in the panel's menu.
 //
@@ -17,7 +18,7 @@ Item {
   id: root
 
   property string label: ""
-  property color foreground: Color.foreground
+  property color foreground: Commons.Color.foreground
   property string fontFamily: Style.font.family
   property bool destructive: false
   property bool hasCursor: false
@@ -46,7 +47,7 @@ Item {
     text: root.label
     textFormat: Text.PlainText
     elide: Text.ElideRight
-    color: root.destructive ? Color.urgent : root.foreground
+    color: root.destructive ? Commons.Color.urgent : root.foreground
     font.family: root.fontFamily
     font.pixelSize: Style.font.body
   }

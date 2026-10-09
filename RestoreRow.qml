@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 
 // One entry in a snapshot listing: a folder to descend into, a file to pick,
@@ -22,9 +23,9 @@ Item {
   // states that can all be on different rows at once.
   property bool hasCursor: false
 
-  property color foreground: Color.foreground
+  property color foreground: Commons.Color.foreground
   property color dim: Qt.darker(foreground, 1.55)
-  property color accent: Color.accent
+  property color accent: Commons.Color.accent
   property string fontFamily: Style.font.family
 
   signal activated()
