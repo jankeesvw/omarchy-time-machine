@@ -94,9 +94,7 @@ FocusScope {
   // whoever opened it to have done so. The click that opens this was the only
   // thing calling loadSnapshots, which meant any other route in showed two
   // empty dropdowns and nothing else.
-  function ensureLoaded() { root.syncSnapshots(false) }
-
-
+  //
   // force: re-read even when a list has already been read. Opening this view
   // does, because the usual reason for coming here is that a backup just ran,
   // and a list cached from before it is missing exactly the snapshot you came
@@ -115,6 +113,8 @@ FocusScope {
     if (TimeMachineStore.snapshotsBusy) return
     if (force || !TimeMachineStore.snapshotsLoaded) TimeMachineStore.loadSnapshots()
   }
+
+  function ensureLoaded() { root.syncSnapshots(false) }
 
   // Three triggers, and each one covers a case the others miss.
   //
@@ -304,6 +304,9 @@ FocusScope {
       // in. Keeping it would leave a bare ID that every restore fails against,
       // so a selection that is gone counts the same as no selection.
       if (root.snapshotId !== "" && root.currentSnapshot() !== null) return
+      // An open confirmation was about the snapshot that is gone; left open, it
+      // would quietly restore from whichever one replaces it.
+      restoreConfirm.opened = false
       if (TimeMachineStore.snapshots.length > 0) {
         root.openSnapshot(String(TimeMachineStore.snapshots[0].id))
       } else if (root.snapshotId !== "") {
