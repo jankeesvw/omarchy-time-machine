@@ -837,7 +837,8 @@ backup_in_flight() {
 }
 
 # Everything worth knowing about every destination, without touching one of
-# them. Reads the configuration and the local state file only, so it answers
+# them. Reads the configuration, the local state and progress files, and asks
+# systemd whether a backup is running. All of that is local, so it answers
 # instantly whether or not the disk is plugged in or the NAS is awake.
 destinations_table() {
   load_config

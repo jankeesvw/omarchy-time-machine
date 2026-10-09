@@ -174,7 +174,7 @@ offsite        Offsite                s3:s3.eu-central-1.amazonaws.com/attic *-*
 35 snapshots, 373 GB stored in total
 ```
 
-That reads your settings and one local file, nothing else, so it answers straight away whether or not the drive is plugged in.
+That only reads your settings and a few local files and asks systemd whether a backup is running, so it answers straight away whether or not the drive is plugged in.
 
 You can drive the whole thing from the terminal if you prefer. `omarchy-time-machine` on its own lists what it can do.
 
