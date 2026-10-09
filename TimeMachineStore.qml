@@ -617,9 +617,7 @@ Singleton {
     if (failed) {
       var when = menuDate(lastRun.finished_at)
       var since = lastSuccessAt !== "" ? ", last good one " + relativeTime(lastSuccessAt) : ""
-      var reason = destinationFailureReason(active)
-      if (reason !== "") reason = ": " + reason
-      return "Backup failed " + when.charAt(0).toLowerCase() + when.slice(1) + since + reason
+      return "Backup failed " + when.charAt(0).toLowerCase() + when.slice(1) + since
     }
     if (!everRan) return "Time Machine — no backup yet"
     return "Last backup: " + relativeTime(lastRun.finished_at)
