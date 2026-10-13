@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "jankeesvw.time-machine",
   "name": "Time Machine",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Jankees",
   "description": "Scheduled restic backups with a destination picker and a snapshot browser",
   "homepage": "https://github.com/jankeesvw/omarchy-time-machine",

@@ -90,61 +90,61 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     slotSize: root.barSlot
-    // iconComponent is loaded into a square canvas of opticalSize, sized for a
-    // single glyph. Widen it too, or the badge falls outside it.
-    opticalSize: root.barContentWidth
     // The shared bar tooltip is a shell component, so its textFormat is not
     // ours to set: strip anything that could be read as markup before it goes
     // in. Our own strings are safe, but a destination name comes from
     // config.json and an error message comes from restic.
     tooltipText: TimeMachineStore.plain(TimeMachineStore.tooltip)
 
-    iconComponent: Component {
-      Item {
+    // Not an iconComponent: the shell scales that down to icon size, which
+    // would shrink the warning badge next to the icon to a smudge.
+    hasVisualContent: true
+
+    Item {
+      anchors.fill: parent
+      Text {
+        anchors.centerIn: parent
+        text: TimeMachineStore.iconTimeMachine
+        textFormat: Text.PlainText
+        font.family: root.fontFamily
+        font.pixelSize: Style.bar.iconFont
+        renderType: Text.NativeRendering
+        color: root.barIconColor
+
+        // A slow pulse while a backup runs. Deliberately not a percentage in
+        // the bar: the number would demand to be read, where the pulse only
+        // says "busy" and the panel carries the detail.
+        SequentialAnimation on opacity {
+          running: TimeMachineStore.running
+          loops: Animation.Infinite
+          alwaysRunToEnd: true
+          NumberAnimation { from: 1.0; to: 0.45; duration: 900; easing.type: Easing.InOutQuad }
+          NumberAnimation { from: 0.45; to: 1.0; duration: 900; easing.type: Easing.InOutQuad }
+        }
+        onVisibleChanged: if (!TimeMachineStore.running) opacity = 1.0
+      }
+
+      // Exclamation badge, pinned to the glyph's top right.
+      Rectangle {
+        visible: root.showBadge
+        width: root.badgeSize
+        height: root.badgeSize
+        radius: width / 2
+        color: root.urgent
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.horizontalCenterOffset: Style.bar.iconFont / 2
+        anchors.verticalCenter: parent.verticalCenter
+        anchors.verticalCenterOffset: -Style.bar.iconFont / 2.6
+
         Text {
           anchors.centerIn: parent
-          text: TimeMachineStore.iconTimeMachine
+          text: "!"
           textFormat: Text.PlainText
+          color: Commons.Color.background
           font.family: root.fontFamily
-          font.pixelSize: Style.bar.iconFont
+          font.pixelSize: Math.round(root.badgeSize * 0.8)
+          font.bold: true
           renderType: Text.NativeRendering
-          color: root.barIconColor
-
-          // A slow pulse while a backup runs. Deliberately not a percentage in
-          // the bar: the number would demand to be read, where the pulse only
-          // says "busy" and the panel carries the detail.
-          SequentialAnimation on opacity {
-            running: TimeMachineStore.running
-            loops: Animation.Infinite
-            alwaysRunToEnd: true
-            NumberAnimation { from: 1.0; to: 0.45; duration: 900; easing.type: Easing.InOutQuad }
-            NumberAnimation { from: 0.45; to: 1.0; duration: 900; easing.type: Easing.InOutQuad }
-          }
-          onVisibleChanged: if (!TimeMachineStore.running) opacity = 1.0
-        }
-
-        // Exclamation badge, pinned to the glyph's top right.
-        Rectangle {
-          visible: root.showBadge
-          width: root.badgeSize
-          height: root.badgeSize
-          radius: width / 2
-          color: root.urgent
-          anchors.horizontalCenter: parent.horizontalCenter
-          anchors.horizontalCenterOffset: Style.bar.iconFont / 2
-          anchors.verticalCenter: parent.verticalCenter
-          anchors.verticalCenterOffset: -Style.bar.iconFont / 2.6
-
-          Text {
-            anchors.centerIn: parent
-            text: "!"
-            textFormat: Text.PlainText
-            color: Commons.Color.background
-            font.family: root.fontFamily
-            font.pixelSize: Math.round(root.badgeSize * 0.8)
-            font.bold: true
-            renderType: Text.NativeRendering
-          }
         }
       }
     }
