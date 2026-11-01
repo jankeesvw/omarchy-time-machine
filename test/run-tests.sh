@@ -472,6 +472,27 @@ jq 'del(.destinations[].schedule)' "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$C
 grep -qh "keep 2 daily, 1 weekly, 12 monthly, 3 yearly" "$XDG_STATE_HOME/omarchy-time-machine/logs/second/"*.log
 check $? "per-destination retention overrides key by key, not wholesale"
 
+# hourly, last and within are optional extras for intra-day restore points.
+# They are passed to restic only when set, and a malformed one is skipped with
+# a log line instead of failing every forget.
+jq '.destinations[1].retention += {hourly:5, last:3, within:"2d"}' \
+  "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
+$CLI backup --dest second >/dev/null 2>&1
+newest_log() { ls -t "$XDG_STATE_HOME/omarchy-time-machine/logs/second/"*.log | head -1; }
+grep -q "keep 3 latest, 5 hourly, 2 daily" "$(newest_log)" \
+  && grep -q "within 2d of the newest" "$(newest_log)"
+check $? "retention hourly, last and within reach restic"
+
+jq '.destinations[1].retention = {daily:2, last:"lots", within:"2 days"}' \
+  "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
+$CLI backup --dest second >/dev/null 2>&1
+check $? "a malformed optional retention value does not fail the backup"
+grep -q 'Ignoring retention.last' "$(newest_log)" \
+  && grep -q 'Ignoring retention.within' "$(newest_log)" \
+  && grep -q "keep 2 daily" "$(newest_log)" \
+  && ! grep -q "within 2" "$(newest_log)"
+check $? "malformed optional retention values are skipped and logged"
+
 # A destination pointing at nothing must not take the others down with it.
 jq '.destinations += [{name:"broken", repository:"/nonexistent/repo"}]' \
   "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"

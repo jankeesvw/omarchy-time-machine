@@ -377,6 +377,44 @@ keep_value() {
   number_or "$value" "$fallback"
 }
 
+# Optional retention keys: no default, so nothing is passed to restic unless
+# the user set them. They exist for intra-day restore points, which the
+# daily/weekly/monthly/yearly rules thin out to one a day.
+keep_optional() {
+  local key="$1" value
+  value="$(jq -r --arg k "$key" '.retention[$k] // empty' <<<"$DEST_JSON" 2>/dev/null)"
+  [ -n "$value" ] || value="$(jq -r --arg k "$key" '.retention[$k] // empty' <<<"$CONFIG_JSON" 2>/dev/null)"
+  printf '%s' "$value"
+}
+
+# Fills EXTRA_KEEP with --keep-* flags for the optional keys. `hourly` and
+# `last` are counts; `within` is restic's duration syntax, such as 2d or
+# 1y2m3d4h. A value that does not parse is skipped with a log line rather than
+# passed to restic, because a bad flag would fail every forget and the
+# repository would then grow without bound. Runs in the current shell, not a
+# command substitution: log_line writes to stdout.
+EXTRA_KEEP=()
+optional_keep_flags() {
+  local key value
+  EXTRA_KEEP=()
+  for key in hourly last; do
+    value="$(keep_optional "$key")"
+    [ -n "$value" ] || continue
+    if [ "$(number_or "$value" x)" = x ]; then
+      log_line "Ignoring retention.$key: \"$value\" is not a whole number"
+      continue
+    fi
+    EXTRA_KEEP+=("--keep-$key" "$(number_or "$value" 0)")
+  done
+  value="$(keep_optional within)"
+  [ -n "$value" ] || return 0
+  if [[ "$value" =~ ^([0-9]{1,4}[ymdh])+$ ]]; then
+    EXTRA_KEEP+=(--keep-within "$value")
+  else
+    log_line "Ignoring retention.within: \"$value\" is not a duration like 2d or 1y2m3d4h"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # Secrets
 # ---------------------------------------------------------------------------
@@ -1329,7 +1367,9 @@ unreadable_reason() {
 run_forget() {
   log_line ""
   log_line "Removing old snapshots..."
+  optional_keep_flags
   restic_run forget \
+    ${EXTRA_KEEP+"${EXTRA_KEEP[@]}"} \
     --keep-daily "$(keep_value daily 7)" \
     --keep-weekly "$(keep_value weekly 4)" \
     --keep-monthly "$(keep_value monthly 12)" \

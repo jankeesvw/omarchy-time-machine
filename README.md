@@ -123,7 +123,7 @@ You only need `name` and `repository`. Everything else already has a sensible de
 |---|---|---|
 | `source` | your home folder | What gets backed up. A path, or a list of them: `["~", "/etc", "/srv/data"]`. If one is missing the backup stops rather than quietly taking half of it. |
 | `exclude_file` | `excludes.txt` next to your config | Things to skip. Caches, downloads, virtual machine images. Anything you can get back another way. |
-| `retention` | 7 daily, 4 weekly, 12 monthly, 3 yearly | How far back you can go. Older backups get thinned out rather than kept forever. |
+| `retention` | 7 daily, 4 weekly, 12 monthly, 3 yearly | How far back you can go. Older backups get thinned out rather than kept forever. Optional extra keys keep intra-day backups too: `hourly` and `last` are counts, `within` is a duration such as `"2d"` (everything from the last two days). |
 | `schedule` | none | When it runs. `"*-*-* 03:00:00"` is every night at three. Leave it out and this destination only runs when you press the button. |
 | `display_name` | the `name` | What the panel calls it. "The drive in my bag" reads better than `usb2`. |
 | `pre_command` | none | A command to wake the destination first. See below. |
