@@ -1537,9 +1537,16 @@ cmd_report_failure() {
 # Opens a file manager with the given path selected in its parent folder --
 # the thing you actually want after a restore, rather than being told a path
 # and having to go find it yourself.
+#
+# Files (folio) is Omarchy's own file manager and comes first. It has no
+# --select flag: handed a file instead of a folder, it opens the parent with
+# that file selected. The path is always absolute here, so it cannot be
+# mistaken for an option.
 open_in_file_manager() {
   local path="$1"
-  if command -v nautilus >/dev/null 2>&1; then
+  if command -v folio >/dev/null 2>&1; then
+    setsid folio "$path" >/dev/null 2>&1 &
+  elif command -v nautilus >/dev/null 2>&1; then
     setsid nautilus --select -- "$path" >/dev/null 2>&1 &
   elif command -v thunar >/dev/null 2>&1; then
     setsid thunar -- "$(dirname -- "$path")" >/dev/null 2>&1 &
