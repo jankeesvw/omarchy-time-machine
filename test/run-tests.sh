@@ -376,6 +376,37 @@ check $? "status still emits valid JSON after a failure"
 
 cp "$WORK/config.bak" "$CONFIG"
 
+# A run that dies before restic starts -- here a failing pre_command -- used to
+# exit from die() without a word to status.json or the progress file, so the
+# panel kept showing the previous success, however old.
+
+group_restic "A run that dies early"
+
+$CLI backup --dest test >/dev/null 2>&1
+GOOD_SUCCESS="$(jq -r '.destinations.test.last_success_at' "$STATUS" 2>/dev/null)"
+jq '.destinations[0].pre_command = "exit 2"' "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
+sleep 1
+
+$CLI backup --dest test >/dev/null 2>&1
+check $(( $? == 0 )) "a failing pre_command still fails the backup"
+
+jq -e '.destinations.test.last_run.result == "failed"' "$STATUS" >/dev/null 2>&1
+check $? "it is recorded as failed"
+
+jq -e '.destinations.test.last_run.error | test("pre_command of test failed")' "$STATUS" >/dev/null 2>&1
+check $? "with the reason die() gave"
+
+jq -e --arg s "$GOOD_SUCCESS" '.destinations.test.last_success_at == $s' "$STATUS" >/dev/null 2>&1
+check $? "and the last good backup is left alone"
+
+jq -e '.state == "failed" and .result == "failed"' "$XDG_STATE_HOME/omarchy-time-machine/progress-test.json" >/dev/null 2>&1
+check $? "the progress file says failed, not running"
+
+cp "$WORK/config.bak" "$CONFIG"
+$CLI backup --dest test >/dev/null 2>&1
+jq -e '.destinations.test.last_run.result == "ok"' "$STATUS" >/dev/null 2>&1
+check $? "the next good run records ok again"
+
 # --- staleness -------------------------------------------------------------
 
 group_restic "Progress staleness"
