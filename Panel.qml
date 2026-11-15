@@ -36,7 +36,7 @@ Panel {
   readonly property color barIconColor: {
     if (TimeMachineStore.running) return accent
     if (TimeMachineStore.failed) return urgent
-    if (!TimeMachineStore.configured) return Qt.darker(barForeground, 1.9)
+    if (!TimeMachineStore.configured) return Qt.rgba(barForeground.r, barForeground.g, barForeground.b, 0.85)
     return barForeground
   }
 
