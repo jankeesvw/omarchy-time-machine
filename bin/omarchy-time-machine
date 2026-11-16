@@ -99,17 +99,40 @@ SUMMARY_FILE=""
 ERROR_FILE=""
 UNREADABLE_FILE=""
 
+# Set by cmd_backup once the run has started and cleared once it has recorded
+# its own result. A backup that dies in between -- a failed pre_command, a
+# missing source -- used to exit straight from die(), leaving the progress file
+# at "running" and status.json at the previous good run, so the panel showed a
+# success that could be days old. die() now records the failure first.
+RUN_STARTED=""
+RUN_STARTED_EPOCH=""
+
 # die() must only ever be called from the main shell, never from inside a
 # command substitution: there it would exit the subshell and the caller would
 # sail on with an empty string. Functions that can fail therefore write their
 # result into a global rather than printing it.
 die() {
+  [ -n "$RUN_STARTED" ] && record_run_death "$*"
   if [ "$JSON_MODE" = "1" ]; then
     jq -nc --arg e "$*" '{ok:false, error:$e}'
     exit 0
   fi
   printf 'Error: %s\n' "$*" >&2
   exit 1
+}
+
+# record_run_death <message>: the failure record for a backup that die() is
+# about to end. Clears RUN_STARTED first, so a die() inside cannot recurse.
+record_run_death() {
+  local msg="$1" started="$RUN_STARTED" started_epoch="$RUN_STARTED_EPOCH"
+  RUN_STARTED=""
+  if [ -n "$ERROR_FILE" ]; then
+    printf '%s' "$msg" > "$ERROR_FILE" 2>/dev/null
+  fi
+  # The failure notification opens this log, so the reason belongs in it too.
+  [ -n "$LOG_FILE" ] && printf 'Backup failed: %s\n' "$msg" >> "$LOG_FILE" 2>/dev/null
+  [ "${OPT_DRY_RUN:-0}" = "1" ] || record_status "$started" "$started_epoch" 1 failed 'null'
+  progress_write failed backup 1 "$(jq -nc --arg e "$msg" '{percent:1.0, result:"failed", error:$e}')"
 }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 is not installed"; }
@@ -1102,6 +1125,8 @@ cmd_backup() {
   local -a sources missing
   started="$(date -Iseconds)"
   started_epoch="$(date +%s)"
+  RUN_STARTED="$started"
+  RUN_STARTED_EPOCH="$started_epoch"
 
   # A run that dies before its cleanup -- a config error, a kill -- leaves its
   # scratch file behind. Sweep them here rather than only on the happy path,
@@ -1233,6 +1258,7 @@ cmd_backup() {
     prune_old_logs
   fi
 
+  RUN_STARTED=""
   [ "$OPT_DRY_RUN" = "1" ] || record_status "$started" "$started_epoch" "$backup_exit" "$result" "$summary"
 
   progress_write "$([ "$result" = "failed" ] && echo failed || echo done)" backup 1 \
