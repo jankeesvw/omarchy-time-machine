@@ -396,6 +396,9 @@ check $? "it is recorded as failed"
 jq -e '.destinations.test.last_run.error | test("pre_command of test failed")' "$STATUS" >/dev/null 2>&1
 check $? "with the reason die() gave"
 
+grep -qF "pre_command of test failed" "$($CLI log --dest test 2>/dev/null)" 2>/dev/null
+check $? "and the log it opens says so too"
+
 jq -e --arg s "$GOOD_SUCCESS" '.destinations.test.last_success_at == $s' "$STATUS" >/dev/null 2>&1
 check $? "and the last good backup is left alone"
 

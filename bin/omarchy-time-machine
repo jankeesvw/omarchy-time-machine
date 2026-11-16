@@ -129,6 +129,8 @@ record_run_death() {
   if [ -n "$ERROR_FILE" ]; then
     printf '%s' "$msg" > "$ERROR_FILE" 2>/dev/null
   fi
+  # The failure notification opens this log, so the reason belongs in it too.
+  [ -n "$LOG_FILE" ] && printf 'Backup failed: %s\n' "$msg" >> "$LOG_FILE" 2>/dev/null
   [ "${OPT_DRY_RUN:-0}" = "1" ] || record_status "$started" "$started_epoch" 1 failed 'null'
   progress_write failed backup 1 "$(jq -nc --arg e "$msg" '{percent:1.0, result:"failed", error:$e}')"
 }
