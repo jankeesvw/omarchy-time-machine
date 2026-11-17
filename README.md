@@ -103,6 +103,14 @@ omarchy-time-machine key save-1password --dest backup-drive
 
 That writes it into your vault as "Time Machine backup key (backup-drive)", with a note saying which destination it opens. It refuses if an item by that name already exists, because two of them is how you end up trying the wrong one in a year.
 
+Proton Pass works the same way, through Proton's `pass-cli`:
+
+```
+omarchy-time-machine key save-protonpass --dest backup-drive
+```
+
+The password goes into a custom item as a hidden field, with the same note alongside it. It takes `--vault <name>` when you have more than one vault, and uses the only vault without being asked when you don't.
+
 ## Getting files back
 
 Open the panel and hit **Restore Files**. Pick a day, then browse to whatever you're looking for, the same way you'd browse any folder.
