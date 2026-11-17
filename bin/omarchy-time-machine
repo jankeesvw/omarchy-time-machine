@@ -775,6 +775,84 @@ Without this password the backup cannot be opened. Not by you, not by anyone."
   printf 'That is the copy that survives losing this machine.\n'
 }
 
+# Copies the repository password into Proton Pass, which is the same "somewhere
+# else" the warning above asks for. Built to the same rules as the 1Password
+# helper: the secret travels on stdin inside a JSON template and never as an
+# argument, a duplicate title is refused rather than shadowed, and every call is
+# timeout-wrapped so a CLI waiting for input cannot hang the command.
+#
+# pass-cli identifies a vault by share id; --vault takes the name you read in
+# the app and resolves it once, here.
+key_save_to_protonpass() {
+  local keyfile="$1"
+  local title notes template vaults share existing
+
+  command -v pass-cli >/dev/null 2>&1 ||
+    die "the Proton Pass CLI is not installed. See https://proton.me/support/proton-pass-cli"
+
+  user_file "$keyfile" ||
+    die "no key file at $keyfile, run: omarchy-time-machine key set --dest $DEST_NAME"
+
+  # The call that actually exercises the session, so a logged-out CLI fails
+  # here with something actionable instead of halfway through creating an item.
+  if ! vaults="$(timeout 60 pass-cli vault list --output json 2>&1)"; then
+    printf '%s\n' "$vaults" >&2
+    die "Proton Pass did not answer. Sign in with: pass-cli login"
+  fi
+
+  if [ -n "$OPT_VAULT" ]; then
+    share="$(jq -r --arg v "$OPT_VAULT" '.vaults[]? | select(.name == $v) | .share_id' <<<"$vaults" 2>/dev/null | head -n 1)"
+    [ -n "$share" ] || die "no Proton Pass vault called \"$OPT_VAULT\""
+  else
+    # One vault is the common case, so pick it instead of making the user name
+    # it. With more than one, guessing files the key somewhere you would not
+    # think to look on the day you need it.
+    case "$(jq -r '.vaults | length' <<<"$vaults" 2>/dev/null)" in
+      1) share="$(jq -r '.vaults[0].share_id' <<<"$vaults")" ;;
+      *) die "more than one Proton Pass vault; choose one with --vault <name>" ;;
+    esac
+  fi
+
+  title="Time Machine backup key ($DEST_NAME)"
+
+  # Refuse rather than overwrite or duplicate, for the reason the 1Password
+  # helper gives: two items with the same title is how you end up restoring
+  # with the wrong key a year from now.
+  if existing="$(timeout 30 pass-cli item list --share-id "$share" --output json 2>/dev/null)" &&
+     jq -e --arg t "$title" 'any(.items[]?; .title == $t)' <<<"$existing" >/dev/null 2>&1; then
+    die "Proton Pass already has an item called \"$title\". Delete or rename it first."
+  fi
+
+  notes="Repository password for the Time Machine destination \"$DEST_NAME\".
+
+Destination: $(sanitize_repository "$(dest '.repository // empty')")
+Saved from: $(hostname 2>/dev/null || printf 'unknown host')
+
+Without this password the backup cannot be opened. Not by you, not by anyone."
+
+  # A custom item rather than a note: the password sits in a hidden field, so it
+  # is concealed in the app exactly as a login password is. It still never
+  # reaches argv.
+  template="$(jq -n \
+    --arg title "$title" \
+    --arg password "$(cat -- "$keyfile")" \
+    --arg notes "$notes" \
+    '{title: $title,
+      note: $notes,
+      sections: [{section_name: "Time Machine",
+                  fields: [{field_name: "repository password",
+                            field_type: "hidden",
+                            value: $password}]}]}')" ||
+    die "could not build the Proton Pass item"
+
+  printf '%s' "$template" |
+    timeout 60 pass-cli item create custom --share-id "$share" --from-template - >/dev/null ||
+    die "Proton Pass refused to create the item"
+
+  printf 'Saved to Proton Pass as "%s".\n' "$title"
+  printf 'That is the copy that survives losing this machine.\n'
+}
+
 cmd_key() {
   local action="${1:-}"
   [ "$#" -gt 0 ] && shift
@@ -791,6 +869,9 @@ cmd_key() {
   case "$action" in
     save-1password)
       key_save_to_1password "$path"
+      ;;
+    save-protonpass)
+      key_save_to_protonpass "$path"
       ;;
     set)
       [ -z "$(dest '.password_command // empty')" ] ||
@@ -828,7 +909,7 @@ cmd_key() {
       cat -- "$path"
       ;;
     *)
-      die "usage: key set|show|save-1password --dest <name>"
+      die "usage: key set|show|save-1password|save-protonpass --dest <name>"
       ;;
   esac
 }
@@ -2045,6 +2126,7 @@ omarchy-time-machine $VERSION
   destinations [--json]               list every destination and when it last ran
   key set|show --dest <name>          manage the repository password
   key save-1password --dest <name>    copy it into 1Password, optionally --vault V
+  key save-protonpass --dest <name>   copy it into Proton Pass, optionally --vault V
   init --dest <name>                  create the repository
   backup [--dest <name>] [--dry-run]  run a backup
   snapshots --dest <name> --json      list snapshots

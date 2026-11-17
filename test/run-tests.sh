@@ -587,6 +587,91 @@ check $? "a 1Password that will not answer fails fast instead of hanging"
 
 cp "$WORK/config.bak" "$CONFIG"
 
+# --- saving the key to Proton Pass -----------------------------------------
+#
+# The same rules as the 1Password group, with one extra moving part: pass-cli
+# identifies a vault by share id, so the helper resolves --vault (or the only
+# vault) before it can create anything. Stubbed for the same reason: a test run
+# must never write into somebody's real vault.
+
+group "Saving the key to Proton Pass"
+
+mkdir -p "$WORK/pstub"
+cat > "$WORK/pstub/pass-cli" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "vault list") echo '{"vaults":[{"name":"Main","share_id":"SHARE1"}]}' ;;
+  "item list") echo '{"items":[]}' ;;
+  "item create") printf '%s' "$*" > "$PP_ARGV"; cat > "$PP_CAPTURE"; exit 0 ;;
+esac
+STUB
+chmod +x "$WORK/pstub/pass-cli"
+
+jq '.destinations[0].repository = "sftp:me:hunter2@nas:/volume1/backup"' "$CONFIG" > "$CONFIG.n" && mv "$CONFIG.n" "$CONFIG"
+PP_ARGV="$WORK/pp-argv" PP_CAPTURE="$WORK/pp-stdin" PATH="$WORK/pstub:$PATH" \
+  $CLI key save-protonpass --dest test >/dev/null 2>&1
+
+grep -q "test-password" "$WORK/pp-argv" 2>/dev/null && false || true
+check $? "the key never appears in pass-cli's arguments"
+
+jq -e '.sections[0].fields[0].value == "test-password"' "$WORK/pp-stdin" >/dev/null 2>&1
+check $? "it travels on stdin inside the item template"
+
+jq -e '.sections[0].fields[0].field_type == "hidden"' "$WORK/pp-stdin" >/dev/null 2>&1
+check $? "the password lands in a concealed field rather than the note"
+
+grep -q "hunter2" "$WORK/pp-stdin" 2>/dev/null && false || true
+check $? "and the note names the destination without its password"
+
+# A title that already exists must be refused rather than shadowed: two items
+# with the same name is how you end up restoring with the wrong key.
+cat > "$WORK/pstub/pass-cli" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "vault list") echo '{"vaults":[{"name":"Main","share_id":"SHARE1"}]}' ;;
+  "item list") echo '{"items":[{"title":"Time Machine backup key (test)"}]}' ;;
+  "item create") exit 0 ;;
+esac
+STUB
+chmod +x "$WORK/pstub/pass-cli"
+PATH="$WORK/pstub:$PATH" $CLI key save-protonpass --dest test >/dev/null 2>&1 && false || true
+check $? "a second item with the same title is refused"
+
+# Two vaults and no --vault: guessing would file the key where you would not
+# think to look for it, so it refuses instead.
+cat > "$WORK/pstub/pass-cli" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "vault list") echo '{"vaults":[{"name":"Main","share_id":"SHARE1"},{"name":"Work","share_id":"SHARE2"}]}' ;;
+  "item list") echo '{"items":[]}' ;;
+  "item create") printf '%s' "$*" > "$PP_ARGV"; cat > /dev/null; exit 0 ;;
+esac
+STUB
+chmod +x "$WORK/pstub/pass-cli"
+PATH="$WORK/pstub:$PATH" $CLI key save-protonpass --dest test >/dev/null 2>&1 && false || true
+check $? "with more than one vault it refuses to pick one itself"
+
+# ...and finds the right one when told.
+PP_ARGV="$WORK/pp-argv2" PATH="$WORK/pstub:$PATH" \
+  $CLI key save-protonpass --dest test --vault Work >/dev/null 2>&1
+grep -q "SHARE2" "$WORK/pp-argv2" 2>/dev/null
+check $? "--vault resolves the name to that vault's share id"
+
+# A CLI that is present but not signed in must fail immediately. A backup tool
+# that can sit waiting on an authentication prompt is worse than one that stops.
+cat > "$WORK/pstub/pass-cli" <<'STUB'
+#!/usr/bin/env bash
+[ "$1" = "vault" ] && { echo "not signed in" >&2; exit 1; }
+sleep 300
+STUB
+chmod +x "$WORK/pstub/pass-cli"
+START="$(date +%s)"
+PATH="$WORK/pstub:$PATH" $CLI key save-protonpass --dest test >/dev/null 2>&1
+[ "$(( $(date +%s) - START ))" -lt 5 ]
+check $? "a Proton Pass that will not answer fails fast instead of hanging"
+
+cp "$WORK/config.bak" "$CONFIG"
+
 # --- more than one source ---------------------------------------------------
 
 group_restic "Multiple sources"
