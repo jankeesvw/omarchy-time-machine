@@ -705,6 +705,31 @@ $CLI demo off >/dev/null 2>&1
 [ "$($CLI status --json | jq -r '[.destinations[].name] | join(",")')" = "test" ]
 check $? "turning demo off restores the real configuration"
 
+# --- a repository that is not there ----------------------------------------
+#
+# The panel holds back "Back Up Now" and "Restore Files" when it cannot find
+# the repository, which for a drive means the drive is not plugged in. It
+# learns that from one field and from nothing else, so that field has to be
+# right in all three cases.
+
+group "A repository that is not there"
+
+$CLI status --json | jq -e '.destinations[] | select(.name == "test") | .repository_available == true' >/dev/null 2>&1
+check $? "a repository that is there reports true"
+
+cp "$CONFIG" "$WORK/config.before-missing"
+jq --arg r "$WORK/not-mounted/restic" '.destinations[0].repository = $r' "$CONFIG" > "$WORK/config.missing"
+mv "$WORK/config.missing" "$CONFIG"
+$CLI status --json | jq -e '.destinations[] | select(.name == "test") | .repository_available == false' >/dev/null 2>&1
+check $? "a repository on a drive that is not mounted reports false"
+
+jq '.destinations[0].repository = "sftp://me@nas:/volume1/backup"' "$CONFIG" > "$WORK/config.remote"
+mv "$WORK/config.remote" "$CONFIG"
+$CLI status --json | jq -e '.destinations[] | select(.name == "test") | .repository_available == null' >/dev/null 2>&1
+check $? "a repository on another machine reports null, which the panel takes as present"
+
+cp "$WORK/config.before-missing" "$CONFIG"
+
 # --- result ----------------------------------------------------------------
 
 if [ "$SKIPPED" -gt 0 ]; then

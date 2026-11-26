@@ -976,7 +976,7 @@ cmd_status() {
   fi
   load_config
 
-  local status active out name progress running installed repo
+  local status active out name progress running installed repo available repository
   status="$(load_status)"
   out='[]'
 
@@ -995,6 +995,20 @@ cmd_status() {
 
     repo="$(sanitize_repository "$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .repository // ""' <<<"$CONFIG_JSON")")"
 
+    # Whether the repository is where the configuration says it is. Only a
+    # repository on this machine can be told without a network round trip,
+    # and only there does it tell the panel something it needs: a drive that
+    # is not plugged in leaves a hole where the repository should be, and a
+    # backup or a restore started against it can do nothing but fail. So the
+    # panel holds its buttons back and says why instead. A repository
+    # elsewhere (sftp:, s3:, ...) is reported as unknown, and the panel goes
+    # on offering the buttons as it always did.
+    available=null
+    repository="$(expand_tilde "$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .repository // ""' <<<"$CONFIG_JSON")")"
+    case "$repository" in
+      /*) available=false; [ -d "$repository" ] && available=true ;;
+    esac
+
     out="$(jq -c \
       --arg name "$name" \
       --arg label "$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .display_name // $n' <<<"$CONFIG_JSON")" \
@@ -1003,10 +1017,12 @@ cmd_status() {
       --arg schedule "$(jq -r --arg n "$name" '.destinations[] | select(.name==$n) | .schedule // ""' <<<"$CONFIG_JSON")" \
       --argjson running "$running" \
       --argjson progress "$progress" \
+      --argjson available "$available" \
       '. + [$stored + {name:$name, display_name:$label,
                        schedule:(if $schedule == "" then null else $schedule end),
                        running:$running,
                        repository_display:(if $repo == "" then ($stored.repository_display // "") else $repo end),
+                       repository_available:$available,
                        progress:(if $running then $progress else null end)}]' <<<"$out")"
   done < <(cfg '.destinations[].name')
 
