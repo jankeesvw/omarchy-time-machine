@@ -392,15 +392,42 @@ Panel {
           MenuRow {
             width: parent.width
             visible: TimeMachineStore.configured && TimeMachineStore.unitsInstalled
+            // A backup needs its repository, so with the drive not connected
+            // this could only fail. Stopping a running backup must stay
+            // possible even then, which is what the second half keeps.
+            enabled: TimeMachineStore.anyRepositoryAvailable || TimeMachineStore.anyRunning
             label: TimeMachineStore.anyRunning ? "Stop This Backup" : "Back Up Now"
             destructive: TimeMachineStore.anyRunning
             foreground: root.foreground
+            dim: root.dim
             fontFamily: root.fontFamily
             onClicked: {
               if (TimeMachineStore.anyRunning) stopConfirm.opened = true
               else if (TimeMachineStore.multiple) TimeMachineStore.startAllBackups()
               else TimeMachineStore.startBackup()
             }
+          }
+
+          // The same idea for a drive that is not connected: the rows above
+          // and below are held back, so say why, in the place a click would
+          // have shown it.
+          Text {
+            width: parent.width
+            visible: TimeMachineStore.missingRepositories.length > 0
+            topPadding: visible ? Style.space(6) : 0
+            bottomPadding: visible ? Style.space(6) : 0
+            text: {
+              var names = TimeMachineStore.missingRepositories.map(function(d) {
+                return d.display_name || d.name
+              })
+              return "Cannot find the backup location for \u2018"
+                  + names.join(", ") + "\u2019. Is the drive connected?"
+            }
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
           }
 
           // Rather than an action that silently does nothing, say what is
@@ -427,8 +454,12 @@ Panel {
           MenuRow {
             width: parent.width
             visible: TimeMachineStore.configured
+            // The snapshots live in the repository, so there is nothing to
+            // browse while the drive is not connected.
+            enabled: TimeMachineStore.anyRepositoryAvailable
             label: "Restore Files\u2026"
             foreground: root.foreground
+            dim: root.dim
             fontFamily: root.fontFamily
             onClicked: {
               root.browsing = true

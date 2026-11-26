@@ -19,13 +19,18 @@ Item {
 
   property string label: ""
   property color foreground: Commons.Color.foreground
+  // The label's colour while the row is disabled, for an action that cannot
+  // do anything right now, such as a backup while the drive is not
+  // connected. The built-in `enabled` already takes away the click and the
+  // pointing cursor; this only makes the state visible.
+  property color dim: Qt.darker(foreground, 1.55)
   property string fontFamily: Style.font.family
   property bool destructive: false
   property bool hasCursor: false
 
   signal clicked()
 
-  readonly property bool hot: mouse.containsMouse || root.hasCursor
+  readonly property bool hot: root.enabled && (mouse.containsMouse || root.hasCursor)
 
   implicitHeight: Style.space(26)
   height: implicitHeight
@@ -47,7 +52,7 @@ Item {
     text: root.label
     textFormat: Text.PlainText
     elide: Text.ElideRight
-    color: root.destructive ? Commons.Color.urgent : root.foreground
+    color: !root.enabled ? root.dim : root.destructive ? Commons.Color.urgent : root.foreground
     font.family: root.fontFamily
     font.pixelSize: Style.font.body
   }

@@ -68,6 +68,18 @@ Singleton {
   readonly property bool failed: lastRun ? lastRun.result === "failed" : false
   readonly property bool everRan: lastRun !== null
 
+  // Destinations whose repository cannot be found. For a repository on a
+  // drive that means the drive is not connected, and a backup or a restore
+  // started against it can do nothing but fail, so the panel holds its
+  // buttons back and says why. The CLI reports null for a repository it
+  // cannot tell about without a network round trip; that counts as present,
+  // and the buttons behave as they did before this existed.
+  readonly property var missingRepositories: destinations.filter(function(d) {
+    return d.repository_available === false
+  })
+  readonly property bool anyRepositoryAvailable:
+    destinations.length === 0 || missingRepositories.length < destinations.length
+
   // Ticks once a minute so "3 hours ago" ages without a status call. Bumping
   // this property is what re-evaluates the relative-time bindings; the value
   // itself is never read.
